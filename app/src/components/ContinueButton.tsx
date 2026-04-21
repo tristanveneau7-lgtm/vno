@@ -40,6 +40,7 @@ export function ContinueButton({
         borderRadius: radius,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.4 : 1,
+        transition: 'opacity 120ms ease-out',
         fontFamily: 'inherit',
         ...style,
       }}

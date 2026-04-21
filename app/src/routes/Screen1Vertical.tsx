@@ -3,18 +3,28 @@ import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
+import { useQuiz, type Vertical } from '../lib/store'
+import { useCanContinue } from '../lib/validation'
 
-const VERTICALS = [
-  'Tattoo', 'Groomer',
-  'Barber', 'Salon',
-  'Trades', 'Restaurant',
-  'Gym', 'Health',
-  'Auto', 'Daycare',
+const VERTICALS: { key: Vertical; label: string }[] = [
+  { key: 'tattoo', label: 'Tattoo' },
+  { key: 'groomer', label: 'Groomer' },
+  { key: 'barber', label: 'Barber' },
+  { key: 'salon', label: 'Salon' },
+  { key: 'trades', label: 'Trades' },
+  { key: 'restaurant', label: 'Restaurant' },
+  { key: 'gym', label: 'Gym' },
+  { key: 'health', label: 'Health' },
+  { key: 'auto', label: 'Auto' },
+  { key: 'daycare', label: 'Daycare' },
 ]
-const SELECTED = 'Salon'
 
 export function Screen1Vertical() {
   const navigate = useNavigate()
+  const vertical = useQuiz((s) => s.vertical)
+  const setVertical = useQuiz((s) => s.setVertical)
+  const canContinue = useCanContinue(1)
+
   return (
     <PhoneShell>
       <Header step="1 / 7" />
@@ -25,11 +35,13 @@ export function Screen1Vertical() {
         Tap one. We&rsquo;ll filter from there.
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        {VERTICALS.map((label) => {
-          const selected = label === SELECTED
+        {VERTICALS.map(({ key, label }) => {
+          const selected = vertical === key
           return (
-            <div
-              key={label}
+            <button
+              key={key}
+              type="button"
+              onClick={() => setVertical(key)}
               style={{
                 padding: '18px 12px',
                 textAlign: 'center',
@@ -39,14 +51,21 @@ export function Screen1Vertical() {
                 color: selected ? tokens.accentText : tokens.textPrimary,
                 border: selected ? 'none' : `0.5px solid ${tokens.border}`,
                 fontWeight: selected ? 500 : 400,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+                transition: 'background 120ms ease-out, color 120ms ease-out',
               }}
             >
               {label}
-            </div>
+            </button>
           )
         })}
       </div>
-      <ContinueButton onClick={() => navigate('/quiz/2')} style={{ marginTop: 22 }} />
+      <ContinueButton
+        onClick={() => navigate('/quiz/2')}
+        disabled={!canContinue}
+        style={{ marginTop: 22 }}
+      />
     </PhoneShell>
   )
 }

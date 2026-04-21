@@ -3,16 +3,18 @@ import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
+import { useQuiz, type Sections } from '../lib/store'
 
-type Row = { label: string; state: 'locked' | 'on' | 'off' }
+type ToggleKey = keyof Omit<Sections, 'landing'>
+type Row = { label: string; key: ToggleKey | 'landing' }
 
 const ROWS: Row[] = [
-  { label: 'Landing', state: 'locked' },
-  { label: 'Gallery', state: 'on' },
-  { label: 'Phone CTA', state: 'on' },
-  { label: 'Booking', state: 'on' },
-  { label: 'Pricing', state: 'off' },
-  { label: 'About', state: 'off' },
+  { label: 'Landing', key: 'landing' },
+  { label: 'Gallery', key: 'gallery' },
+  { label: 'Phone CTA', key: 'phoneCta' },
+  { label: 'Booking', key: 'booking' },
+  { label: 'Pricing', key: 'pricing' },
+  { label: 'About', key: 'about' },
 ]
 
 function Toggle({ on }: { on: boolean }) {
@@ -24,16 +26,18 @@ function Toggle({ on }: { on: boolean }) {
       borderRadius: 9,
       position: 'relative',
       flexShrink: 0,
+      transition: 'background-color 120ms ease-out',
     }}>
       <div style={{
         position: 'absolute',
         top: 2,
-        left: on ? undefined : 2,
-        right: on ? 2 : undefined,
+        left: 2,
         width: 14,
         height: 14,
         background: on ? '#0A0A0A' : '#555',
         borderRadius: '50%',
+        transform: on ? 'translateX(14px)' : 'translateX(0)',
+        transition: 'transform 120ms ease-out, background-color 120ms ease-out',
       }} />
     </div>
   )
@@ -41,6 +45,9 @@ function Toggle({ on }: { on: boolean }) {
 
 export function Screen3Sections() {
   const navigate = useNavigate()
+  const sections = useQuiz((s) => s.sections)
+  const toggleSection = useQuiz((s) => s.toggleSection)
+
   return (
     <PhoneShell>
       <Header step="3 / 7" />
@@ -52,22 +59,34 @@ export function Screen3Sections() {
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {ROWS.map((row) => {
-          const dim = row.state === 'off'
+          const isLanding = row.key === 'landing'
+          const on = isLanding ? true : sections[row.key as ToggleKey]
+          const dim = !isLanding && !on
           return (
-            <div key={row.label} style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: tokens.surface,
-              border: `0.5px solid ${tokens.border}`,
-              borderRadius: tokens.radius.button,
-              padding: '13px 14px',
-            }}>
+            <button
+              key={row.key}
+              type="button"
+              disabled={isLanding}
+              onClick={isLanding ? undefined : () => toggleSection(row.key as ToggleKey)}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: tokens.surface,
+                border: `0.5px solid ${tokens.border}`,
+                borderRadius: tokens.radius.button,
+                padding: '13px 14px',
+                width: '100%',
+                fontFamily: 'inherit',
+                cursor: isLanding ? 'default' : 'pointer',
+                textAlign: 'left',
+              }}
+            >
               <span style={{ fontSize: 14, color: dim ? '#888' : tokens.textPrimary }}>{row.label}</span>
-              {row.state === 'locked'
+              {isLanding
                 ? <span style={{ fontSize: 10, color: '#555', letterSpacing: '0.1em' }}>LOCKED</span>
-                : <Toggle on={row.state === 'on'} />}
-            </div>
+                : <Toggle on={on} />}
+            </button>
           )
         })}
       </div>

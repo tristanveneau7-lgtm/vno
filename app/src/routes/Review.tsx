@@ -3,16 +3,18 @@ import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
+import { useQuiz } from '../lib/store'
 
 const SERIF = '"Times New Roman", serif'
 
 export function Review() {
   const navigate = useNavigate()
+  const name = useQuiz((s) => s.business.name).trim() || 'Your business'
   return (
     <PhoneShell>
       <Header step="ready" marginBottom={18} rightColor="#888" />
       <div style={{ fontSize: tokens.font.title.size, fontWeight: tokens.font.title.weight, letterSpacing: tokens.font.title.letterSpacing, margin: '0 0 4px' }}>
-        Maison Rose
+        {name}
       </div>
       <p style={{ fontSize: 12, color: '#888', margin: '0 0 18px' }}>Built in 5m 42s. Looks good?</p>
 

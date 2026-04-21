@@ -17,3 +17,35 @@ body {
 * {
   box-sizing: border-box;
 }
+
+.vno-input,
+.vno-textarea {
+  width: 100%;
+  background: #161616;
+  border: 0.5px solid #262626;
+  border-radius: 6px;
+  padding: 11px 12px;
+  font-size: 14px;
+  color: #F5F5F5;
+  font-family: inherit;
+  outline: none;
+  transition: box-shadow 120ms ease-out;
+}
+
+.vno-textarea {
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 130px;
+  resize: none;
+}
+
+.vno-input:focus,
+.vno-textarea:focus {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+
+.vno-input::placeholder,
+.vno-textarea::placeholder {
+  color: #555;
+}

@@ -3,15 +3,23 @@ import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
+import { useQuiz, type BusinessInfo } from '../lib/store'
+import { useCanContinue } from '../lib/validation'
 
-type Field = { label: string; value: string; optional?: boolean; dim?: boolean }
+type Field = {
+  key: keyof BusinessInfo
+  label: string
+  type: 'text' | 'tel'
+  optional?: boolean
+  autoComplete?: string
+}
 
 const FIELDS: Field[] = [
-  { label: 'Business name', value: 'Maison Rose' },
-  { label: 'Address', value: '228 Main St, Moncton' },
-  { label: 'Phone', value: '(506) 555-0114' },
-  { label: 'Hours', value: 'Wed\u2013Sat, 10 to 6' },
-  { label: 'Slogan', value: 'A chair you return to.', optional: true, dim: true },
+  { key: 'name', label: 'Business name', type: 'text', autoComplete: 'organization' },
+  { key: 'address', label: 'Address', type: 'text', autoComplete: 'street-address' },
+  { key: 'phone', label: 'Phone', type: 'tel', autoComplete: 'tel' },
+  { key: 'hours', label: 'Hours', type: 'text' },
+  { key: 'slogan', label: 'Slogan', type: 'text', optional: true },
 ]
 
 function FieldLabel({ text, optional }: { text: string; optional?: boolean }) {
@@ -31,6 +39,10 @@ function FieldLabel({ text, optional }: { text: string; optional?: boolean }) {
 
 export function Screen2Business() {
   const navigate = useNavigate()
+  const business = useQuiz((s) => s.business)
+  const setBusiness = useQuiz((s) => s.setBusiness)
+  const canContinue = useCanContinue(2)
+
   return (
     <PhoneShell>
       <Header step="2 / 7" />
@@ -42,22 +54,25 @@ export function Screen2Business() {
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {FIELDS.map((f) => (
-          <div key={f.label}>
+          <div key={f.key}>
             <FieldLabel text={f.label} optional={f.optional} />
-            <div style={{
-              background: tokens.surface,
-              border: `0.5px solid ${tokens.border}`,
-              borderRadius: tokens.radius.button,
-              padding: '11px 12px',
-              fontSize: 14,
-              color: f.dim ? '#555' : tokens.textPrimary,
-            }}>
-              {f.value}
-            </div>
+            <input
+              className="vno-input"
+              type={f.type}
+              inputMode={f.type === 'tel' ? 'tel' : undefined}
+              autoComplete={f.autoComplete}
+              autoCapitalize={f.key === 'phone' ? 'off' : 'sentences'}
+              value={business[f.key]}
+              onChange={(e) => setBusiness({ [f.key]: e.target.value })}
+            />
           </div>
         ))}
       </div>
-      <ContinueButton onClick={() => navigate('/quiz/3')} style={{ marginTop: 22 }} />
+      <ContinueButton
+        onClick={() => navigate('/quiz/3')}
+        disabled={!canContinue}
+        style={{ marginTop: 22 }}
+      />
     </PhoneShell>
   )
 }
