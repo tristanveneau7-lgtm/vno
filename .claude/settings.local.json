@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npx claude-mem *)",
+      "Bash(pip install *)",
+      "Bash(graphify install *)"
+    ]
+  }
+}

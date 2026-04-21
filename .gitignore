@@ -1,0 +1,14 @@
+﻿node_modules/
+.venv/
+dist/
+build/
+*.timestamp-*.mjs
+Reels/
+Reference/
+*.mp4
+*.mov
+.env
+.env.local
+.DS_Store
+Thumbs.db
+.obsidian/workspace.json
