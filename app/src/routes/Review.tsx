@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
@@ -7,16 +7,38 @@ import { useQuiz } from '../lib/store'
 
 const SERIF = '"Times New Roman", serif'
 
+type BuildNavState = { url: string; buildTime: number; requestId: string }
+
+function displayDomain(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+  }
+}
+
 export function Review() {
   const navigate = useNavigate()
-  const name = useQuiz((s) => s.business.name).trim() || 'Your business'
+  const { state } = useLocation() as { state: BuildNavState | null }
+  const businessName = useQuiz((s) => s.business.name.trim() || 'Your business')
+
+  // Direct navigation to /review without state (refresh, bookmark, deep link) → start over.
+  if (!state || typeof state.url !== 'string' || typeof state.buildTime !== 'number') {
+    return <Navigate to="/quiz/1" replace />
+  }
+
+  const { url, buildTime } = state
+  const domain = displayDomain(url)
+
   return (
     <PhoneShell>
       <Header step="ready" marginBottom={18} rightColor="#888" />
       <div style={{ fontSize: tokens.font.title.size, fontWeight: tokens.font.title.weight, letterSpacing: tokens.font.title.letterSpacing, margin: '0 0 4px' }}>
-        {name}
+        {businessName}
       </div>
-      <p style={{ fontSize: 12, color: '#888', margin: '0 0 18px' }}>Built in 5m 42s. Looks good?</p>
+      <p style={{ fontSize: 12, color: '#888', margin: '0 0 18px' }}>
+        Built in {buildTime.toFixed(1)}s. Looks good?
+      </p>
 
       <div style={{
         background: tokens.surface,
@@ -54,13 +76,13 @@ export function Review() {
           fontSize: 11,
           color: '#888',
         }}>
-          <span>maison-rose-7a3f.netlify.app</span>
+          <span>{domain}</span>
           <span style={{ color: '#666' }}>tap to expand</span>
         </div>
       </div>
 
       <ContinueButton
-        onClick={() => navigate('/dnd')}
+        onClick={() => navigate('/dnd', { state: { url } })}
         padding="14px"
         fontSize="14px"
         style={{ marginBottom: 8 }}

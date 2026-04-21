@@ -1,18 +1,28 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../components/PhoneShell'
 import { tokens } from '../lib/tokens'
 
+type DndNavState = { url: string }
+
 export function DndCheck() {
   const navigate = useNavigate()
+  const { state } = useLocation() as { state: DndNavState | null }
   const [checked, setChecked] = useState(false)
+
+  // Arriving here without a build URL means a refresh or deep link — start over.
+  if (!state || typeof state.url !== 'string') {
+    return <Navigate to="/quiz/1" replace />
+  }
+
+  const { url } = state
 
   const onButton = () => {
     if (!checked) {
       setChecked(true)
       return
     }
-    navigate('/preview')
+    navigate('/preview', { state: { url } })
   }
 
   return (

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 export type Vertical = 'tattoo' | 'groomer' | 'barber' | 'salon' | 'trades' | 'restaurant' | 'gym' | 'health' | 'auto' | 'daycare'
 
@@ -54,14 +55,31 @@ const initialState = {
   anythingSpecial: '',
 }
 
-export const useQuiz = create<QuizState>((set) => ({
-  ...initialState,
-  setVertical: (v) => set({ vertical: v }),
-  setBusiness: (b) => set((s) => ({ business: { ...s.business, ...b } })),
-  toggleSection: (key) => set((s) => ({ sections: { ...s.sections, [key]: !s.sections[key] } })),
-  setVibe: (v) => set({ vibe: v }),
-  setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logoDataUrl: dataUrl } })),
-  setPhoto: (slot, dataUrl) => set((s) => ({ assets: { ...s.assets, [`photo${slot}DataUrl`]: dataUrl } })),
-  setAnythingSpecial: (text) => set({ anythingSpecial: text }),
-  reset: () => set(initialState),
-}))
+export const useQuiz = create<QuizState>()(
+  persist(
+    (set) => ({
+      ...initialState,
+      setVertical: (v) => set({ vertical: v }),
+      setBusiness: (b) => set((s) => ({ business: { ...s.business, ...b } })),
+      toggleSection: (key) => set((s) => ({ sections: { ...s.sections, [key]: !s.sections[key] } })),
+      setVibe: (v) => set({ vibe: v }),
+      setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logoDataUrl: dataUrl } })),
+      setPhoto: (slot, dataUrl) => set((s) => ({ assets: { ...s.assets, [`photo${slot}DataUrl`]: dataUrl } })),
+      setAnythingSpecial: (text) => set({ anythingSpecial: text }),
+      reset: () => set(initialState),
+    }),
+    {
+      name: 'vno-quiz',
+      // Partialize: persist text fields only. Base64 image data URLs can easily blow past
+      // localStorage's ~5–10MB quota, and re-picking an image on refresh is acceptable UX.
+      partialize: (state) => ({
+        vertical: state.vertical,
+        business: state.business,
+        sections: state.sections,
+        vibe: state.vibe,
+        anythingSpecial: state.anythingSpecial,
+      }),
+      version: 1,
+    }
+  )
+)

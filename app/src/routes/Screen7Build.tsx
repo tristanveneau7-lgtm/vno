@@ -4,9 +4,11 @@ import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
+import { useQuiz } from '../lib/store'
+import { postBuild } from '../lib/api'
 
-type Status = 'done' | 'active' | 'pending'
-type Row = { label: string; status: Status; right?: string }
+type RowStatus = 'done' | 'active' | 'pending'
+type Row = { label: string; status: RowStatus; right?: string }
 
 const ROWS: Row[] = [
   { label: 'Cloning the reference', status: 'done', right: 'done' },
@@ -16,15 +18,37 @@ const ROWS: Row[] = [
   { label: 'Deploying to Netlify', status: 'pending' },
 ]
 
+type Status = 'idle' | 'building' | 'error'
+
 export function Screen7Build() {
   const navigate = useNavigate()
-  const [building, setBuilding] = useState(false)
+  const state = useQuiz()
+  const [status, setStatus] = useState<Status>('idle')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
-  const onBuild = () => {
-    if (building) return
-    setBuilding(true)
-    setTimeout(() => navigate('/review'), 2000)
+  const handleBuild = async () => {
+    if (status === 'building') return
+    setStatus('building')
+    setErrorMsg(null)
+    try {
+      const result = await postBuild({
+        vertical: state.vertical,
+        business: state.business,
+        sections: state.sections,
+        vibe: state.vibe,
+        assets: state.assets,
+        anythingSpecial: state.anythingSpecial,
+      })
+      navigate('/review', {
+        state: { url: result.url, buildTime: result.buildTime, requestId: result.requestId },
+      })
+    } catch (err) {
+      setStatus('error')
+      setErrorMsg(err instanceof Error ? err.message : 'Unknown error')
+    }
   }
+
+  const label = status === 'building' ? 'Building\u2026' : status === 'error' ? 'Try again' : 'Build the site \u2192'
 
   return (
     <PhoneShell>
@@ -37,14 +61,14 @@ export function Screen7Build() {
       </div>
 
       <ContinueButton
-        onClick={onBuild}
-        disabled={building}
+        onClick={handleBuild}
+        disabled={status === 'building'}
         padding="18px"
         fontSize="15px"
         radius={tokens.radius.card}
-        style={{ marginBottom: 24, opacity: building ? 0.5 : 1 }}
+        style={{ marginBottom: 24, opacity: status === 'building' ? 0.5 : 1 }}
       >
-        {building ? 'Building\u2026' : 'Build the site \u2192'}
+        {label}
       </ContinueButton>
 
       <div style={{
@@ -84,6 +108,17 @@ export function Screen7Build() {
           <div style={{ width: '45%', height: '100%', background: '#FFFFFF' }} />
         </div>
       </div>
+
+      {status === 'error' && errorMsg && (
+        <div style={{
+          marginTop: 12,
+          fontSize: 12,
+          color: '#E26D6D',
+          lineHeight: 1.4,
+        }}>
+          {errorMsg}
+        </div>
+      )}
     </PhoneShell>
   )
 }
