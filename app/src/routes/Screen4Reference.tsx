@@ -1,65 +1,61 @@
 import { useNavigate } from 'react-router-dom'
-import type { CSSProperties, ReactNode } from 'react'
 import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
-import { useQuiz, type Vibe } from '../lib/store'
+import { useQuiz } from '../lib/store'
 import { useCanContinue } from '../lib/validation'
-
-type Tile = {
-  key: Vibe
-  name: string
-  descriptor: string
-  thumb: CSSProperties
-  thumbContent?: ReactNode
-}
-
-const TILES: Tile[] = [
-  {
-    key: 'editorial',
-    name: 'Editorial',
-    descriptor: 'Serif \u00b7 quiet \u00b7 magazine',
-    thumb: { background: 'linear-gradient(135deg, #F8F4EE, #D8C4B4)' },
-  },
-  {
-    key: 'modern',
-    name: 'Modern',
-    descriptor: 'Sans \u00b7 confident \u00b7 dark',
-    thumb: { background: '#1A1F2E', display: 'flex', alignItems: 'center', justifyContent: 'center' },
-    thumbContent: <span style={{ fontSize: 11, fontWeight: 700, color: '#FAF9F5' }}>BOLD</span>,
-  },
-  {
-    key: 'heritage',
-    name: 'Heritage',
-    descriptor: 'Warm \u00b7 crafted \u00b7 stamped',
-    thumb: { background: 'linear-gradient(135deg, #EFE6D8, #C24E2C)' },
-  },
-]
+import { referencesFor, type Reference } from '../lib/references'
 
 export function Screen4Reference() {
   const navigate = useNavigate()
-  const vibe = useQuiz((s) => s.vibe)
-  const setVibe = useQuiz((s) => s.setVibe)
+  const vertical = useQuiz((s) => s.vertical)
+  const reference = useQuiz((s) => s.reference)
+  const setReference = useQuiz((s) => s.setReference)
   const canContinue = useCanContinue(4)
+  const refs = referencesFor(vertical)
+
+  // Empty state — vertical has no seeded references yet. Skip button forwards
+  // to step 5 without setting reference; engine /build will reject the payload,
+  // which is fine because there's nothing to clone here anyway. Phase 5 grows
+  // the library so this branch becomes vestigial.
+  if (refs.length === 0) {
+    return (
+      <PhoneShell>
+        <Header step="4 / 7" />
+        <div style={{ fontSize: tokens.font.title.size, fontWeight: tokens.font.title.weight, letterSpacing: tokens.font.title.letterSpacing, margin: '0 0 4px' }}>
+          No references yet for {vertical ?? 'this vertical'}
+        </div>
+        <p style={{ fontSize: tokens.font.subtitle.size, color: tokens.font.subtitle.color, margin: '0 0 18px' }}>
+          Skip this step \u2014 we'll seed more soon.
+        </p>
+        <ContinueButton
+          onClick={() => navigate('/quiz/5')}
+          style={{ marginTop: 22 }}
+        >
+          Skip {'\u2192'}
+        </ContinueButton>
+      </PhoneShell>
+    )
+  }
 
   return (
     <PhoneShell>
       <Header step="4 / 7" />
       <div style={{ fontSize: tokens.font.title.size, fontWeight: tokens.font.title.weight, letterSpacing: tokens.font.title.letterSpacing, margin: '0 0 4px' }}>
-        Pick the vibe
+        Pick a direction
       </div>
       <p style={{ fontSize: tokens.font.subtitle.size, color: tokens.font.subtitle.color, margin: '0 0 18px' }}>
-        Three references for Maison Rose. Tap one.
+        Tap the one that matches this business's vibe.
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {TILES.map((t) => {
-          const selected = vibe === t.key
+        {refs.map((r) => {
+          const selected = reference?.url === r.url
           return (
             <button
-              key={t.key}
+              key={r.url}
               type="button"
-              onClick={() => setVibe(t.key)}
+              onClick={() => setReference({ url: r.url, label: r.label })}
               style={{
                 background: selected ? '#1A1A1A' : tokens.surface,
                 border: selected ? '1.5px solid #FFFFFF' : `0.5px solid ${tokens.border}`,
@@ -76,12 +72,21 @@ export function Screen4Reference() {
                 transition: 'border-color 120ms ease-out, background 120ms ease-out',
               }}
             >
-              <div style={{ width: 60, height: 60, borderRadius: 4, flexShrink: 0, ...t.thumb }}>
-                {t.thumbContent}
-              </div>
+              <img
+                src={r.thumbnailPath}
+                alt={r.label}
+                style={{
+                  width: 80,
+                  height: 60,
+                  borderRadius: 4,
+                  objectFit: 'cover',
+                  flexShrink: 0,
+                  background: '#0F0F0F',
+                }}
+              />
               <div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{t.name}</div>
-                <div style={{ fontSize: 11, color: '#888' }}>{t.descriptor}</div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{r.label}</div>
+                <div style={{ fontSize: 11, color: '#888' }}>{hostOf(r)}</div>
               </div>
             </button>
           )
@@ -94,4 +99,14 @@ export function Screen4Reference() {
       />
     </PhoneShell>
   )
+}
+
+// Mobile Safari supports URL — but a defensive try/catch keeps the tile from
+// going blank if a malformed URL ever lands in the library.
+function hostOf(r: Reference): string {
+  try {
+    return new URL(r.url).host
+  } catch {
+    return r.url
+  }
 }

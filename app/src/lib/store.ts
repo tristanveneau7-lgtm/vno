@@ -28,10 +28,16 @@ export interface Assets {
   photo2DataUrl: string | null
 }
 
+export interface ReferenceChoice {
+  url: string
+  label: string
+}
+
 export interface QuizState {
   vertical: Vertical | null
   business: BusinessInfo
   sections: Sections
+  reference: ReferenceChoice | null
   vibe: Vibe | null
   assets: Assets
   anythingSpecial: string
@@ -39,6 +45,7 @@ export interface QuizState {
   setVertical: (v: Vertical) => void
   setBusiness: (b: Partial<BusinessInfo>) => void
   toggleSection: (key: keyof Omit<Sections, 'landing'>) => void
+  setReference: (r: ReferenceChoice | null) => void
   setVibe: (v: Vibe) => void
   setLogo: (dataUrl: string | null) => void
   setPhoto: (slot: 1 | 2, dataUrl: string | null) => void
@@ -50,6 +57,7 @@ const initialState = {
   vertical: null,
   business: { name: '', address: '', phone: '', hours: '', slogan: '' },
   sections: { landing: true as const, gallery: true, phoneCta: true, booking: true, pricing: false, about: false },
+  reference: null,
   vibe: null,
   assets: { logoDataUrl: null, photo1DataUrl: null, photo2DataUrl: null },
   anythingSpecial: '',
@@ -62,6 +70,7 @@ export const useQuiz = create<QuizState>()(
       setVertical: (v) => set({ vertical: v }),
       setBusiness: (b) => set((s) => ({ business: { ...s.business, ...b } })),
       toggleSection: (key) => set((s) => ({ sections: { ...s.sections, [key]: !s.sections[key] } })),
+      setReference: (r) => set({ reference: r }),
       setVibe: (v) => set({ vibe: v }),
       setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logoDataUrl: dataUrl } })),
       setPhoto: (slot, dataUrl) => set((s) => ({ assets: { ...s.assets, [`photo${slot}DataUrl`]: dataUrl } })),
@@ -76,6 +85,7 @@ export const useQuiz = create<QuizState>()(
         vertical: state.vertical,
         business: state.business,
         sections: state.sections,
+        reference: state.reference,
         vibe: state.vibe,
         anythingSpecial: state.anythingSpecial,
       }),

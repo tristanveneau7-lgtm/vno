@@ -5,6 +5,7 @@ export interface BuildPayload {
   vertical: QuizState['vertical']
   business: QuizState['business']
   sections: QuizState['sections']
+  reference: QuizState['reference']
   vibe: QuizState['vibe']
   assets: QuizState['assets']
   anythingSpecial: QuizState['anythingSpecial']
@@ -25,7 +26,19 @@ export async function postBuild(payload: BuildPayload): Promise<BuildResponse> {
     body: JSON.stringify(payload),
   })
   if (!res.ok) {
-    throw new Error(`Build failed: ${res.status} ${res.statusText}`)
+    // Engine 500s come back as { requestId, error, phase }. Surface the
+    // engine's error string when present so the phone shows something more
+    // useful than "500 Internal Server Error".
+    let detail = `${res.status} ${res.statusText}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body && typeof body.error === 'string' && body.error.length > 0) {
+        detail = body.error
+      }
+    } catch {
+      // Body wasn't JSON — fall through with the status text.
+    }
+    throw new Error(`Build failed: ${detail}`)
   }
   return res.json() as Promise<BuildResponse>
 }

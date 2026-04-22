@@ -1,0 +1,19 @@
+{
+  "salon": [
+    {
+      "url": "https://serenityhairblaxland.com.au/",
+      "label": "Serenity Hair",
+      "thumbnailPath": "/references/serenity-hair-salon.png",
+      "vibe": "heritage"
+    }
+  ],
+  "barber": [],
+  "tattoo": [],
+  "groomer": [],
+  "trades": [],
+  "restaurant": [],
+  "gym": [],
+  "health": [],
+  "auto": [],
+  "daycare": []
+}
