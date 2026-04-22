@@ -11,9 +11,16 @@ type Target = 'logo' | 'photo1' | 'photo2'
 
 export function Screen5Assets() {
   const navigate = useNavigate()
-  const { logo: logoDataUrl, photo1: photo1DataUrl, photo2: photo2DataUrl } = useQuiz((s) => s.assets)
+  const {
+    logo: logoDataUrl,
+    photo1: photo1DataUrl,
+    photo2: photo2DataUrl,
+    photo1Orientation,
+    photo2Orientation,
+  } = useQuiz((s) => s.assets)
   const setLogo = useQuiz((s) => s.setLogo)
   const setPhoto = useQuiz((s) => s.setPhoto)
+  const setPhotoOrientation = useQuiz((s) => s.setPhotoOrientation)
   const canContinue = useCanContinue(5)
 
   const fileInput = useRef<HTMLInputElement>(null)
@@ -47,7 +54,7 @@ export function Screen5Assets() {
         Upload assets
       </div>
       <p style={{ fontSize: tokens.font.subtitle.size, color: tokens.font.subtitle.color, margin: '0 0 18px' }}>
-        Logo, hero photo, and one more — all three required.
+        Logo + two photos. Tap each photo's orientation so the layout places it right.
       </p>
 
       <button
@@ -92,38 +99,75 @@ export function Screen5Assets() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 22 }}>
         {([1, 2] as const).map((slot) => {
           const dataUrl = slot === 1 ? photo1DataUrl : photo2DataUrl
+          const orientation = slot === 1 ? photo1Orientation : photo2Orientation
           return (
-            <button
-              key={slot}
-              type="button"
-              onClick={() => pick(`photo${slot}` as Target)}
-              style={{
-                background: tokens.surface,
-                border: '0.5px dashed #333',
-                borderRadius: tokens.radius.card,
-                padding: dataUrl ? 0 : 22,
-                textAlign: 'center',
-                fontSize: 22,
-                color: '#555',
-                lineHeight: 1,
-                fontFamily: 'inherit',
-                cursor: 'pointer',
-                minHeight: 82,
-                overflow: 'hidden',
-                position: 'relative',
-              }}
-            >
-              {dataUrl
-                ? <img src={dataUrl} alt={`Photo ${slot}`} style={{
-                    position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', borderRadius: tokens.radius.card,
-                  }} />
-                : <>
-                    +
-                    <div style={{ fontSize: 10, marginTop: 6, letterSpacing: '0.08em', color: '#555' }}>
-                      {slot === 1 ? 'HERO' : 'SECONDARY'}
-                    </div>
-                  </>}
-            </button>
+            <div key={slot} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => pick(`photo${slot}` as Target)}
+                style={{
+                  background: tokens.surface,
+                  border: '0.5px dashed #333',
+                  borderRadius: tokens.radius.card,
+                  padding: dataUrl ? 0 : 22,
+                  textAlign: 'center',
+                  fontSize: 22,
+                  color: '#555',
+                  lineHeight: 1,
+                  fontFamily: 'inherit',
+                  cursor: 'pointer',
+                  minHeight: 82,
+                  overflow: 'hidden',
+                  position: 'relative',
+                }}
+              >
+                {dataUrl
+                  ? <img src={dataUrl} alt={`Photo ${slot}`} style={{
+                      position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', borderRadius: tokens.radius.card,
+                    }} />
+                  : <>
+                      +
+                      <div style={{ fontSize: 10, marginTop: 6, letterSpacing: '0.08em', color: '#555' }}>
+                        {slot === 1 ? 'HERO' : 'SECONDARY'}
+                      </div>
+                    </>}
+              </button>
+              {/*
+                Orientation toggle — disabled until a photo is uploaded because
+                tagging orientation without a photo has no meaning. Selected
+                state flips to the accent fill so it reads as a deliberate
+                commit, not a faded hint.
+              */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                {(['portrait', 'landscape'] as const).map((opt) => {
+                  const active = orientation === opt
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => setPhotoOrientation(slot, opt)}
+                      disabled={!dataUrl}
+                      style={{
+                        flex: 1,
+                        padding: '6px 4px',
+                        fontSize: 10,
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                        background: active ? tokens.accent : tokens.surface,
+                        color: active ? tokens.accentText : tokens.textPrimary,
+                        border: `0.5px solid ${active ? tokens.accent : tokens.border}`,
+                        borderRadius: tokens.radius.button,
+                        fontFamily: 'inherit',
+                        cursor: dataUrl ? 'pointer' : 'not-allowed',
+                        opacity: dataUrl ? 1 : 0.35,
+                      }}
+                    >
+                      {opt}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           )
         })}
       </div>

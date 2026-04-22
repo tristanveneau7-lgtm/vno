@@ -195,9 +195,11 @@ The app's Zustand persist middleware uses a numeric `version` key. Bump it any t
 
 The following fell out of Phase 5 testing and didn't ship. None of them block the pitch, but they're the obvious polish for the next pass.
 
-**iPhone EXIF rotation.** Sharp's default is to respect EXIF orientation, but it strips the metadata on output. This mostly works; edge cases where a phone photo comes out sideways on the deployed site mean the EXIF header was malformed. Fix: explicitly `sharp(buf).rotate()` before `.resize()` in `processPhoto`, which bakes the orientation into the pixels.
+> **Phase 6 update (2026-04-22):** The first two gaps below have been addressed — see `PHASE_6_POLISH_HANDOFF.md`. Retained here for historical context. The rest remain open.
 
-**Hardcoded year in the badge.** The cloner prompt currently says "EST. YYYY" and trusts Claude to fill in the year from context. In practice the year is passed into `BADGE_PROMPT(year)` at image-generation time (`new Date().getFullYear()`), but the HTML's `<img alt="">` text and positioning vary. Tighten the prompt to reference the year literally so the badge and the surrounding copy agree.
+**iPhone EXIF rotation.** ~~Sharp's default is to respect EXIF orientation, but it strips the metadata on output. This mostly works; edge cases where a phone photo comes out sideways on the deployed site mean the EXIF header was malformed. Fix: explicitly `sharp(buf).rotate()` before `.resize()` in `processPhoto`, which bakes the orientation into the pixels.~~ *Phase 6 pivoted away from EXIF because phone transfers (AirDrop/iCloud) routinely strip the Orientation tag before the file reaches the PC. Replaced with a human-tagged `Portrait/Landscape` toggle on Screen 5 that drives cloner layout intent (not pixel rotation — see Phase 6 handoff).*
+
+**Hardcoded year in the badge.** ~~The cloner prompt currently says "EST. YYYY" and trusts Claude to fill in the year from context. In practice the year is passed into `BADGE_PROMPT(year)` at image-generation time (`new Date().getFullYear()`), but the HTML's `<img alt="">` text and positioning vary. Tighten the prompt to reference the year literally so the badge and the surrounding copy agree.~~ *Phase 6 routes `currentYear` through a new `CloneOptions` contract to both fal.ai and the cloner; the system prompt has a dedicated YEAR section that forbids `YYYY` literals and past-year defaults.*
 
 **Netlify site cleanup.** Every build creates a fresh `vno-<slug>-<nanoid>.netlify.app`. Free tier allows 500 sites — it'll take a while to hit, but the cleanup is manual today. Candidate for a cron that deletes sites older than 30 days.
 
@@ -219,9 +221,9 @@ The following fell out of Phase 5 testing and didn't ship. None of them block th
 
 **Preview renders but logo is tiny.** Either Claude ignored the "make the logo prominent" part of the system prompt (rare, retry the build — first attempt usually cleans up), or the logo processing in `assets.ts` bottomed out below 100×100 pixels (check `processLogo` — `withoutEnlargement` can leave a small PNG small).
 
-**Preview hero is a blurry stretched mess.** The prospect uploaded a portrait-orientation photo and it got cropped into a landscape hero. Known limitation of the cloner prompt today; a 5.1 candidate is to pass aspect-ratio hints into the prompt per-asset.
+**Preview hero is a blurry stretched mess.** ~~The prospect uploaded a portrait-orientation photo and it got cropped into a landscape hero. Known limitation of the cloner prompt today; a 5.1 candidate is to pass aspect-ratio hints into the prompt per-asset.~~ *Resolved in Phase 6 via human-tagged orientations + a PHOTO PLACEMENT section in the cloner prompt that forbids stretching portraits into wide heroes.*
 
-**Everything works but the EST badge shows `EST. YYYY` literally.** Claude wrote the placeholder year verbatim. Usually self-corrects on retry; long-term, harden `BADGE_PROMPT` and the system prompt to commit to the actual year.
+**Everything works but the EST badge shows `EST. YYYY` literally.** ~~Claude wrote the placeholder year verbatim. Usually self-corrects on retry; long-term, harden `BADGE_PROMPT` and the system prompt to commit to the actual year.~~ *Resolved in Phase 6 — `currentYear` is injected into the cloner via `CloneOptions` and the system prompt has a dedicated YEAR section.*
 
 **Build works but decoratives don't show up.** View-source the generated site and grep for `/grain.png`, `/badge.png`, `/sketch.png`. If the paths aren't there, the cloner prompt didn't inject them — retry. If the paths are there but 404ing, the multi-file deploy didn't upload them — check Window 1's engine log for the byte counts of `grain/badge/sketch` in the parallel-work block. Zero bytes means fal.ai returned no image; partial bytes means the download failed mid-stream.
 

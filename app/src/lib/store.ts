@@ -20,16 +20,27 @@ export interface Sections {
   about: boolean
 }
 
+export type PhotoOrientation = 'portrait' | 'landscape' | null
+
 /**
  * Asset data URLs keyed to match the engine's /build payload shape exactly
  * — the engine validates req.body.assets.logo / photo1 / photo2 and renaming
  * these on the wire would mean editing two codebases every time. Values are
  * `data:image/...;base64,...` strings produced by Screen5Assets' FileReader.
+ *
+ * photo1Orientation / photo2Orientation are human-tagged (the user taps
+ * Portrait or Landscape below each preview). We rely on human tagging rather
+ * than EXIF detection because phone transfers (AirDrop / iCloud) routinely
+ * strip the Orientation tag, so metadata isn't reliable. The engine forwards
+ * these tags to the cloner so it places portraits in split layouts instead
+ * of stretching them into wide heroes.
  */
 export interface Assets {
   logo: string | null
   photo1: string | null
   photo2: string | null
+  photo1Orientation: PhotoOrientation
+  photo2Orientation: PhotoOrientation
 }
 
 export interface ReferenceChoice {
@@ -51,6 +62,7 @@ export interface QuizState {
   setReference: (r: ReferenceChoice | null) => void
   setLogo: (dataUrl: string | null) => void
   setPhoto: (slot: 1 | 2, dataUrl: string | null) => void
+  setPhotoOrientation: (slot: 1 | 2, orientation: Exclude<PhotoOrientation, null>) => void
   setAnythingSpecial: (text: string) => void
   reset: () => void
 }
@@ -60,7 +72,7 @@ const initialState = {
   business: { name: '', address: '', phone: '', hours: '', slogan: '' },
   sections: { landing: true as const, gallery: true, phoneCta: true, booking: true, pricing: false, about: false },
   reference: null,
-  assets: { logo: null, photo1: null, photo2: null },
+  assets: { logo: null, photo1: null, photo2: null, photo1Orientation: null, photo2Orientation: null } as Assets,
   anythingSpecial: '',
 }
 
@@ -73,7 +85,19 @@ export const useQuiz = create<QuizState>()(
       toggleSection: (key) => set((s) => ({ sections: { ...s.sections, [key]: !s.sections[key] } })),
       setReference: (r) => set({ reference: r }),
       setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logo: dataUrl } })),
-      setPhoto: (slot, dataUrl) => set((s) => ({ assets: { ...s.assets, [`photo${slot}`]: dataUrl } })),
+      // Re-uploading a photo clears its orientation tag — the new photo may be a
+      // different orientation from the previous one, and silently carrying over
+      // the old tag would ship a mislabelled asset to the engine.
+      setPhoto: (slot, dataUrl) => set((s) => ({
+        assets: {
+          ...s.assets,
+          [`photo${slot}`]: dataUrl,
+          [`photo${slot}Orientation`]: null,
+        },
+      })),
+      setPhotoOrientation: (slot, orientation) => set((s) => ({
+        assets: { ...s.assets, [`photo${slot}Orientation`]: orientation },
+      })),
       setAnythingSpecial: (text) => set({ anythingSpecial: text }),
       reset: () => set(initialState),
     }),
@@ -88,7 +112,7 @@ export const useQuiz = create<QuizState>()(
         reference: state.reference,
         anythingSpecial: state.anythingSpecial,
       }),
-      version: 3,
+      version: 4,
     }
   )
 )

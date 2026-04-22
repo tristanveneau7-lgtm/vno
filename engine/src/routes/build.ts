@@ -41,6 +41,19 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     if (!req.body.assets?.logo) throw new Error('Missing assets.logo')
     if (!req.body.assets?.photo1) throw new Error('Missing assets.photo1')
     if (!req.body.assets?.photo2) throw new Error('Missing assets.photo2')
+    // Orientations are human-tagged on Screen 5 of the app. We validate the
+    // exact string values here instead of just truthiness because typos like
+    // 'Portrait' or 'PORTRAIT' would silently leak into the cloner prompt and
+    // produce subtly wrong placements.
+    const photo1Orientation = req.body.assets?.photo1Orientation
+    const photo2Orientation = req.body.assets?.photo2Orientation
+    if (photo1Orientation !== 'portrait' && photo1Orientation !== 'landscape') {
+      throw new Error('Missing or invalid assets.photo1Orientation')
+    }
+    if (photo2Orientation !== 'portrait' && photo2Orientation !== 'landscape') {
+      throw new Error('Missing or invalid assets.photo2Orientation')
+    }
+    console.log(`[${requestId}] orientations: photo1=${photo1Orientation}, photo2=${photo2Orientation}`)
 
     const business: BusinessInfo = {
       name: req.body.business.name,
@@ -52,7 +65,10 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
       sections: req.body.sections ?? {},
       vertical: req.body.vertical,
     }
-    const year = new Date().getFullYear().toString()
+    // currentYear is the single source of truth for the year used in the
+    // page — flowed into the cloner prompt (EST badge, copyright footer,
+    // "since" copy) AND stringified for fal.ai's decorative badge prompt.
+    const currentYear = new Date().getFullYear()
 
     // Parallel: screenshot + prospect asset processing + fal.ai decoratives.
     // All five are independent — no shared state, no ordering constraint.
@@ -62,7 +78,7 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
       processLogo(req.body.assets.logo),
       processPhoto(req.body.assets.photo1),
       processPhoto(req.body.assets.photo2),
-      generateDecorativeAssets(year),
+      generateDecorativeAssets(currentYear.toString()),
     ])
     console.log(`[${requestId}] \u2713 all parallel work done`)
     console.log(`[${requestId}]   screenshot: ${screenshot.length} bytes`)
@@ -77,12 +93,13 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     // and we don't want to pay for two concurrent Claude calls if the first
     // would have succeeded.
     console.log(`[${requestId}] \u2192 cloning...`)
+    const cloneOptions = { currentYear, photo1Orientation, photo2Orientation }
     let html: string
     try {
-      html = await cloneToHtml(screenshot, business, req.body.reference.url)
+      html = await cloneToHtml(screenshot, business, req.body.reference.url, cloneOptions)
     } catch (err) {
       console.log(`[${requestId}] \u26a0 clone failed, retrying once: ${err}`)
-      html = await cloneToHtml(screenshot, business, req.body.reference.url)
+      html = await cloneToHtml(screenshot, business, req.body.reference.url, cloneOptions)
     }
     console.log(`[${requestId}] \u2713 html ${html.length} chars`)
 
