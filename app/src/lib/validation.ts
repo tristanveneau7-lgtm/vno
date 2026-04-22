@@ -10,7 +10,12 @@ export function useCanContinue(step: number): boolean {
              && state.business.hours.trim() !== ''
     case 3: return true
     case 4: return state.reference !== null
-    case 5: return state.assets.logoDataUrl !== null
+    case 5:
+      return (
+        state.assets.logo !== null &&
+        state.assets.photo1 !== null &&
+        state.assets.photo2 !== null
+      )
     case 6: return true
     case 7: return true
     default: return false

@@ -50,7 +50,6 @@ export function Screen7Build() {
         business: state.business,
         sections: state.sections,
         reference: state.reference,
-        vibe: state.vibe,
         assets: state.assets,
         anythingSpecial: state.anythingSpecial,
       })

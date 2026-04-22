@@ -11,7 +11,7 @@ type Target = 'logo' | 'photo1' | 'photo2'
 
 export function Screen5Assets() {
   const navigate = useNavigate()
-  const { logoDataUrl, photo1DataUrl, photo2DataUrl } = useQuiz((s) => s.assets)
+  const { logo: logoDataUrl, photo1: photo1DataUrl, photo2: photo2DataUrl } = useQuiz((s) => s.assets)
   const setLogo = useQuiz((s) => s.setLogo)
   const setPhoto = useQuiz((s) => s.setPhoto)
   const canContinue = useCanContinue(5)
@@ -47,7 +47,7 @@ export function Screen5Assets() {
         Upload assets
       </div>
       <p style={{ fontSize: tokens.font.subtitle.size, color: tokens.font.subtitle.color, margin: '0 0 18px' }}>
-        Logo first. Storefront photos optional.
+        Logo, hero photo, and one more — all three required.
       </p>
 
       <button
@@ -120,7 +120,7 @@ export function Screen5Assets() {
                 : <>
                     +
                     <div style={{ fontSize: 10, marginTop: 6, letterSpacing: '0.08em', color: '#555' }}>
-                      PHOTO {slot}
+                      {slot === 1 ? 'HERO' : 'SECONDARY'}
                     </div>
                   </>}
             </button>

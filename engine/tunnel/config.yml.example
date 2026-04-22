@@ -1,0 +1,29 @@
+# Cloudflare Tunnel config for the VNO engine.
+#
+# Copy this file to `engine/tunnel/config.yml` and fill in the two values
+# marked REPLACE_ME below. The real config.yml is gitignored because the
+# credentials path leaks your Windows username.
+#
+# How to fill in:
+#   1. tunnel:           the UUID printed by `cloudflared tunnel create vno-engine`.
+#   2. credentials-file: Cloudflare writes a <UUID>.json into your user profile
+#                        when you create the tunnel. On Windows this is
+#                        C:\Users\<YOU>\.cloudflared\<UUID>.json
+#
+# After filling in, run the tunnel with:
+#   cloudflared tunnel --config tunnel/config.yml run vno-engine
+#
+# The public hostname (engine.vnoweb.ca) is bound separately via
+#   cloudflared tunnel route dns vno-engine engine.vnoweb.ca
+# which writes a CNAME at Cloudflare — it does NOT go in this file.
+
+tunnel: REPLACE_ME_WITH_TUNNEL_UUID
+credentials-file: C:\Users\REPLACE_ME_WITH_WINDOWS_USERNAME\.cloudflared\REPLACE_ME_WITH_TUNNEL_UUID.json
+
+ingress:
+  # Named hostname routes to the engine on localhost. Replace engine.your-domain.example
+  # with the hostname you ran `cloudflared tunnel route dns vno-engine <hostname>` against.
+  - hostname: engine.your-domain.example
+    service: http://localhost:3000
+  # Required 404 catchall — any other request hitting the tunnel gets rejected cleanly.
+  - service: http_status:404

@@ -20,12 +20,16 @@ export interface Sections {
   about: boolean
 }
 
-export type Vibe = 'editorial' | 'modern' | 'heritage'
-
+/**
+ * Asset data URLs keyed to match the engine's /build payload shape exactly
+ * — the engine validates req.body.assets.logo / photo1 / photo2 and renaming
+ * these on the wire would mean editing two codebases every time. Values are
+ * `data:image/...;base64,...` strings produced by Screen5Assets' FileReader.
+ */
 export interface Assets {
-  logoDataUrl: string | null
-  photo1DataUrl: string | null
-  photo2DataUrl: string | null
+  logo: string | null
+  photo1: string | null
+  photo2: string | null
 }
 
 export interface ReferenceChoice {
@@ -38,7 +42,6 @@ export interface QuizState {
   business: BusinessInfo
   sections: Sections
   reference: ReferenceChoice | null
-  vibe: Vibe | null
   assets: Assets
   anythingSpecial: string
 
@@ -46,7 +49,6 @@ export interface QuizState {
   setBusiness: (b: Partial<BusinessInfo>) => void
   toggleSection: (key: keyof Omit<Sections, 'landing'>) => void
   setReference: (r: ReferenceChoice | null) => void
-  setVibe: (v: Vibe) => void
   setLogo: (dataUrl: string | null) => void
   setPhoto: (slot: 1 | 2, dataUrl: string | null) => void
   setAnythingSpecial: (text: string) => void
@@ -58,8 +60,7 @@ const initialState = {
   business: { name: '', address: '', phone: '', hours: '', slogan: '' },
   sections: { landing: true as const, gallery: true, phoneCta: true, booking: true, pricing: false, about: false },
   reference: null,
-  vibe: null,
-  assets: { logoDataUrl: null, photo1DataUrl: null, photo2DataUrl: null },
+  assets: { logo: null, photo1: null, photo2: null },
   anythingSpecial: '',
 }
 
@@ -71,9 +72,8 @@ export const useQuiz = create<QuizState>()(
       setBusiness: (b) => set((s) => ({ business: { ...s.business, ...b } })),
       toggleSection: (key) => set((s) => ({ sections: { ...s.sections, [key]: !s.sections[key] } })),
       setReference: (r) => set({ reference: r }),
-      setVibe: (v) => set({ vibe: v }),
-      setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logoDataUrl: dataUrl } })),
-      setPhoto: (slot, dataUrl) => set((s) => ({ assets: { ...s.assets, [`photo${slot}DataUrl`]: dataUrl } })),
+      setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logo: dataUrl } })),
+      setPhoto: (slot, dataUrl) => set((s) => ({ assets: { ...s.assets, [`photo${slot}`]: dataUrl } })),
       setAnythingSpecial: (text) => set({ anythingSpecial: text }),
       reset: () => set(initialState),
     }),
@@ -86,10 +86,9 @@ export const useQuiz = create<QuizState>()(
         business: state.business,
         sections: state.sections,
         reference: state.reference,
-        vibe: state.vibe,
         anythingSpecial: state.anythingSpecial,
       }),
-      version: 1,
+      version: 3,
     }
   )
 )

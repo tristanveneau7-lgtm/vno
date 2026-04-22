@@ -6,7 +6,6 @@ export interface BuildPayload {
   business: QuizState['business']
   sections: QuizState['sections']
   reference: QuizState['reference']
-  vibe: QuizState['vibe']
   assets: QuizState['assets']
   anythingSpecial: QuizState['anythingSpecial']
 }

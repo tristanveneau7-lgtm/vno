@@ -2,14 +2,13 @@
  * Client-side mirror of engine/src/references/library.json.
  *
  * Why duplicated: the engine needs the URL for server-side cloning; the app
- * needs the thumbnail path + label for tile rendering. One entry today,
- * Phase 5 collapses both into a single source of truth.
+ * needs the thumbnail path + label for tile rendering. Kept in lockstep by
+ * hand — if you add a reference here, add it there too.
  */
 export interface Reference {
   url: string
   label: string
   thumbnailPath: string
-  vibe: string
 }
 
 export const REFERENCES: Record<string, Reference[]> = {
@@ -18,7 +17,6 @@ export const REFERENCES: Record<string, Reference[]> = {
       url: 'https://serenityhairblaxland.com.au/',
       label: 'Serenity Hair',
       thumbnailPath: '/references/serenity-hair-salon.png',
-      vibe: 'heritage',
     },
   ],
   barber: [],
