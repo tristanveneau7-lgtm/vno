@@ -5,6 +5,7 @@ import { cloneToHtml, type BusinessInfo } from '../lib/cloner.js'
 import { processLogo, processPhoto } from '../lib/assets.js'
 import { generateDecorativeAssets } from '../lib/fal.js'
 import { deploySite, slugify, type AssetFile } from '../lib/netlify.js'
+import { isVideoUrl, pngBufferFromMediaUrl } from '../lib/media.js'
 
 /**
  * Phase 5 build pipeline:
@@ -70,11 +71,29 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     // "since" copy) AND stringified for fal.ai's decorative badge prompt.
     const currentYear = new Date().getFullYear()
 
+    // Reference screenshot source: if the library entry supplied an imageUrl,
+    // fetch that directly (image → fetch; video → ffmpeg first frame) and skip
+    // Puppeteer entirely. Otherwise fall back to the existing Puppeteer render
+    // of the live site. The live `reference.url` still travels unchanged to
+    // cloneToHtml below — it's the prompt's "Reference URL: ..." context and
+    // the user-facing click-through on Screen 4.
+    const refImageUrl: string | null =
+      typeof req.body.reference.imageUrl === 'string' && req.body.reference.imageUrl.length > 0
+        ? req.body.reference.imageUrl
+        : null
+    const screenshotMode = refImageUrl
+      ? isVideoUrl(refImageUrl)
+        ? 'direct video first-frame'
+        : 'direct image fetch'
+      : 'puppeteer'
+    console.log(`[${requestId}] reference mode: ${screenshotMode}`)
+    if (refImageUrl) console.log(`[${requestId}]   imageUrl: ${refImageUrl}`)
+
     // Parallel: screenshot + prospect asset processing + fal.ai decoratives.
     // All five are independent — no shared state, no ordering constraint.
     console.log(`[${requestId}] \u2192 parallel: screenshot + asset processing + fal.ai`)
     const [screenshot, logoBuf, photo1Buf, photo2Buf, decorative] = await Promise.all([
-      screenshotUrl(req.body.reference.url),
+      refImageUrl ? pngBufferFromMediaUrl(refImageUrl) : screenshotUrl(req.body.reference.url),
       processLogo(req.body.assets.logo),
       processPhoto(req.body.assets.photo1),
       processPhoto(req.body.assets.photo2),

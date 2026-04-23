@@ -14,9 +14,17 @@ const VERTICALS: { key: Vertical; label: string }[] = [
   { key: 'trades', label: 'Trades' },
   { key: 'restaurant', label: 'Restaurant' },
   { key: 'gym', label: 'Gym' },
+  // Golf sits next to Gym — both are leisure/recreation destinations and
+  // tend to share layout sensibilities (course photography, membership
+  // tiers, booking forms).
+  { key: 'golf', label: 'Golf' },
   { key: 'health', label: 'Health' },
   { key: 'auto', label: 'Auto' },
   { key: 'daycare', label: 'Daycare' },
+  // Business is the generic professional-services catch-all — consultants,
+  // agencies, B2B shops that don't fit a tighter vertical. Anchoring it at
+  // the end so the more specific choices get top-of-grid attention first.
+  { key: 'business', label: 'Business' },
 ]
 
 export function Screen1Vertical() {

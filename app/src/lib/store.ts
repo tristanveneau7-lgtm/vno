@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type Vertical = 'tattoo' | 'groomer' | 'barber' | 'salon' | 'trades' | 'restaurant' | 'gym' | 'health' | 'auto' | 'daycare'
+export type Vertical = 'tattoo' | 'groomer' | 'barber' | 'salon' | 'trades' | 'restaurant' | 'gym' | 'golf' | 'health' | 'auto' | 'daycare' | 'business'
 
 export interface BusinessInfo {
   name: string
@@ -46,6 +46,13 @@ export interface Assets {
 export interface ReferenceChoice {
   url: string
   label: string
+  /**
+   * Optional direct image/video URL — mirrored from the picked Reference in
+   * references.ts. When present, the engine fetches it directly (mp4 → ffmpeg
+   * first frame; else image buffer) instead of running Puppeteer against `url`.
+   * Absent for legacy refs that only have a live page to screenshot.
+   */
+  imageUrl?: string
 }
 
 export interface QuizState {
@@ -112,7 +119,12 @@ export const useQuiz = create<QuizState>()(
         reference: state.reference,
         anythingSpecial: state.anythingSpecial,
       }),
-      version: 4,
+      // v5 (Phase 6.2): Vertical union gained 'business' and 'golf'. Old
+      // persisted states with only the original 10 verticals remain decode-
+      // compatible (no shrinkage), but bumping defensively so any stale
+      // shape we haven't anticipated gets discarded and rehydrated from the
+      // initial state rather than surfacing as a runtime type mismatch.
+      version: 5,
     }
   )
 )

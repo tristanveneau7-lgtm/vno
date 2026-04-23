@@ -29,6 +29,10 @@ export const VERTICAL_TERMS: Record<string, string> = {
     'This is an auto shop. Use "Get a quote" or "Schedule service" for primary CTA. Mention specialties (mechanical, body work, detailing). Refer to staff as "mechanics" or "technicians."',
   daycare:
     'This is a childcare/daycare business. Use "Schedule a tour" for primary CTA. Use warm, family-focused tone. Mention licensing/safety prominently.',
+  business:
+    'This is a professional services / B2B business (consultancy, agency, firm). Use "Get in touch" or "Schedule a consultation" for the primary CTA. Refer to offerings as "services" or "solutions" and staff as "team" or "consultants." Emphasize expertise, results, and client outcomes. Avoid retail-style language.',
+  golf:
+    'This is a golf course or club. Use "Book a tee time" for the primary CTA. Refer to the facility as "the course" and use terms like "fairway," "tee," "clubhouse," and "pro shop" where they fit naturally. Mention membership options and tournament hosting if the sections allow. Use a composed, club-house tone rather than hype.',
 }
 
 /**
