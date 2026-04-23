@@ -23,24 +23,56 @@ export interface Sections {
 export type PhotoOrientation = 'portrait' | 'landscape' | null
 
 /**
- * Asset data URLs keyed to match the engine's /build payload shape exactly
- * — the engine validates req.body.assets.logo / photo1 / photo2 and renaming
- * these on the wire would mean editing two codebases every time. Values are
- * `data:image/...;base64,...` strings produced by Screen5Assets' FileReader.
+ * Semantic role of an uploaded asset. Captured deliberately on Screen 5
+ * instead of inferred positionally so that out-of-order captures don't
+ * silently mis-label (positional conventions were considered and rejected —
+ * real-world-messy input is the product's whole pitch). Downstream the engine
+ * validates each photo carries a valid role; the Art Director agent (Phase
+ * Tampa Item 3) uses the role to reason about layout and treatment instead
+ * of guessing from pixel content.
  *
- * photo1Orientation / photo2Orientation are human-tagged (the user taps
- * Portrait or Landscape below each preview). We rely on human tagging rather
- * than EXIF detection because phone transfers (AirDrop / iCloud) routinely
- * strip the Orientation tag, so metadata isn't reliable. The engine forwards
- * these tags to the cloner so it places portraits in split layouts instead
- * of stretching them into wide heroes.
+ * Logos are treated as a first-class role here rather than a separate
+ * `logo` field so the four slots share one uniform shape and one setter API.
+ * The logo slot just ignores orientation at the API boundary (logos don't
+ * need a portrait/landscape tag — they're placed by the cloner regardless).
  */
+export type PhotoRole = 'logo' | 'outside' | 'inside' | 'hero'
+
+export const PHOTO_ROLES: readonly PhotoRole[] = ['logo', 'outside', 'inside', 'hero'] as const
+
+/**
+ * A single uploaded asset. `dataUrl` is a `data:image/...;base64,...` string
+ * produced by Screen5Assets' FileReader. `orientation` is human-tagged by the
+ * user tapping Portrait or Landscape beneath the preview — EXIF is
+ * unreliable because phone transfers (AirDrop / iCloud) routinely strip the
+ * Orientation tag. For the logo slot `orientation` is always null (logos
+ * don't carry the tag); it's kept on the shared type so the four slots can
+ * share one setter API.
+ */
+export interface Photo {
+  dataUrl: string
+  orientation: PhotoOrientation
+}
+
+/**
+ * The four labeled upload slots. Each is either a populated `Photo` or
+ * `null`. Continue-gating rules live in validation.ts and expect:
+ *   - `logo` populated (required)
+ *   - at least 2 of { outside, inside, hero } populated
+ *   - every non-logo populated slot must have its orientation tagged
+ * Flattened to an array `{ role, dataUrl, orientation }` at the API
+ * boundary (see lib/api.ts) so the engine doesn't need to know about the
+ * app's keyed-object shape.
+ */
+export interface Photos {
+  logo: Photo | null
+  outside: Photo | null
+  inside: Photo | null
+  hero: Photo | null
+}
+
 export interface Assets {
-  logo: string | null
-  photo1: string | null
-  photo2: string | null
-  photo1Orientation: PhotoOrientation
-  photo2Orientation: PhotoOrientation
+  photos: Photos
   /**
    * Three hex colors with semantic roles that the cloner honors across the
    * generated site: primary (dominant CTAs, hero accents, brand-bar), secondary
@@ -84,9 +116,17 @@ export interface QuizState {
   setBusiness: (b: Partial<BusinessInfo>) => void
   toggleSection: (key: keyof Omit<Sections, 'landing'>) => void
   setReference: (r: ReferenceChoice | null) => void
-  setLogo: (dataUrl: string | null) => void
-  setPhoto: (slot: 1 | 2, dataUrl: string | null) => void
-  setPhotoOrientation: (slot: 1 | 2, orientation: Exclude<PhotoOrientation, null>) => void
+  /**
+   * Populate or clear a slot. Passing `null` clears; passing a string replaces
+   * the dataUrl and resets orientation to null (the new photo may be a
+   * different orientation from the previous one, and carrying over the old
+   * tag would ship a mislabelled asset).
+   */
+  setPhoto: (role: PhotoRole, dataUrl: string | null) => void
+  /**
+   * Tag orientation for a non-logo photo slot. Logo never carries orientation.
+   */
+  setPhotoOrientation: (role: Exclude<PhotoRole, 'logo'>, orientation: Exclude<PhotoOrientation, null>) => void
   setPaletteColor: (slot: PaletteSlot, hex: string) => void
   setAnythingSpecial: (text: string) => void
   reset: () => void
@@ -98,11 +138,12 @@ const initialState = {
   sections: { landing: true as const, gallery: true, phoneCta: true, booking: true, pricing: false, about: false },
   reference: null,
   assets: {
-    logo: null,
-    photo1: null,
-    photo2: null,
-    photo1Orientation: null,
-    photo2Orientation: null,
+    photos: {
+      logo: null,
+      outside: null,
+      inside: null,
+      hero: null,
+    },
     palette: { primary: '', secondary: '', accent: '' },
   } as Assets,
   anythingSpecial: '',
@@ -116,20 +157,31 @@ export const useQuiz = create<QuizState>()(
       setBusiness: (b) => set((s) => ({ business: { ...s.business, ...b } })),
       toggleSection: (key) => set((s) => ({ sections: { ...s.sections, [key]: !s.sections[key] } })),
       setReference: (r) => set({ reference: r }),
-      setLogo: (dataUrl) => set((s) => ({ assets: { ...s.assets, logo: dataUrl } })),
-      // Re-uploading a photo clears its orientation tag — the new photo may be a
-      // different orientation from the previous one, and silently carrying over
-      // the old tag would ship a mislabelled asset to the engine.
-      setPhoto: (slot, dataUrl) => set((s) => ({
+      setPhoto: (role, dataUrl) => set((s) => ({
         assets: {
           ...s.assets,
-          [`photo${slot}`]: dataUrl,
-          [`photo${slot}Orientation`]: null,
+          photos: {
+            ...s.assets.photos,
+            [role]: dataUrl === null
+              ? null
+              // Re-uploading clears orientation — see QuizState.setPhoto docstring.
+              : { dataUrl, orientation: null },
+          },
         },
       })),
-      setPhotoOrientation: (slot, orientation) => set((s) => ({
-        assets: { ...s.assets, [`photo${slot}Orientation`]: orientation },
-      })),
+      setPhotoOrientation: (role, orientation) => set((s) => {
+        const existing = s.assets.photos[role]
+        if (!existing) return {}
+        return {
+          assets: {
+            ...s.assets,
+            photos: {
+              ...s.assets.photos,
+              [role]: { ...existing, orientation },
+            },
+          },
+        }
+      }),
       setPaletteColor: (slot, hex) => set((s) => ({
         assets: { ...s.assets, palette: { ...s.assets.palette, [slot]: hex } },
       })),
@@ -147,12 +199,13 @@ export const useQuiz = create<QuizState>()(
         reference: state.reference,
         anythingSpecial: state.anythingSpecial,
       }),
-      // v5 (Phase 6.2): Vertical union gained 'business' and 'golf'. Old
-      // persisted states with only the original 10 verticals remain decode-
-      // compatible (no shrinkage), but bumping defensively so any stale
-      // shape we haven't anticipated gets discarded and rehydrated from the
-      // initial state rather than surfacing as a runtime type mismatch.
-      version: 5,
+      // v6 (Phase Tampa Item 0): Assets shape restructured — flat
+      // logo/photo1/photo2/*Orientation fields collapse into a single
+      // assets.photos: { logo, outside, inside, hero } keyed object carrying
+      // Photo { dataUrl, orientation } per slot. Any old persisted state is
+      // dropped (we're pre-prod; no user data loss concern) and rehydrated
+      // from the initial state.
+      version: 6,
     }
   )
 )
