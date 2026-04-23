@@ -56,6 +56,20 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     }
     console.log(`[${requestId}] orientations: photo1=${photo1Orientation}, photo2=${photo2Orientation}`)
 
+    // Brand color is a 6-digit hex picked (or logo-extracted) on Screen 5. We
+    // reject bad input with a 400 rather than routing through the generic 500
+    // catch — it's a client-shape problem, not a pipeline failure, and the
+    // cloner prompt trusts this value verbatim so we must guarantee shape here.
+    const brandColor: unknown = req.body.assets?.brandColor
+    if (typeof brandColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(brandColor)) {
+      const buildTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const message = 'Missing or invalid assets.brandColor'
+      console.log(`[${requestId}] \u2717 ${message} after ${buildTime}s (value: ${JSON.stringify(brandColor)})`)
+      res.status(400).json({ requestId, error: message, phase: 5 })
+      return
+    }
+    console.log(`[${requestId}] brandColor: ${brandColor}`)
+
     const business: BusinessInfo = {
       name: req.body.business.name,
       address: req.body.business.address ?? '',
@@ -112,7 +126,7 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     // and we don't want to pay for two concurrent Claude calls if the first
     // would have succeeded.
     console.log(`[${requestId}] \u2192 cloning...`)
-    const cloneOptions = { currentYear, photo1Orientation, photo2Orientation }
+    const cloneOptions = { currentYear, photo1Orientation, photo2Orientation, brandColor }
     let html: string
     try {
       html = await cloneToHtml(screenshot, business, req.body.reference.url, cloneOptions)

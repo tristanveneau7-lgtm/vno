@@ -22,12 +22,15 @@ export interface BusinessInfo {
  * Per-build context the cloner needs that isn't part of the business info
  * itself. currentYear is computed by build.ts (never hardcoded in this file);
  * the orientations are human-tagged by the prospect on Screen 5 of the app
- * and forwarded verbatim through req.body.assets.
+ * and forwarded verbatim through req.body.assets. brandColor is a 6-digit
+ * hex string (e.g. "#1a2b3c") — shape is validated at the build route before
+ * it reaches here, so the cloner trusts it verbatim.
  */
 export interface CloneOptions {
   currentYear: number
   photo1Orientation: 'portrait' | 'landscape'
   photo2Orientation: 'portrait' | 'landscape'
+  brandColor: string
 }
 
 const SYSTEM_PROMPT = `You are a web designer building a one-page landing site for a local small business.
@@ -38,6 +41,7 @@ You will be given:
 3. Vertical-specific terminology guidance
 4. The current year
 5. The orientation (portrait or landscape) of each supplied photo
+6. A brand color (hex) to use as the primary accent
 
 Your job: produce a SINGLE HTML FILE that looks visually similar to the reference, but with all content replaced to match the target business AND the target's actual provided assets used in specific positions.
 
@@ -56,6 +60,13 @@ You will be told whether each photo is portrait or landscape. Use this to choose
 
 YEAR:
 The current year is provided to you. Use that exact year in the EST badge, the copyright footer, and any "established" or "since" language. Never write "YYYY" literally. Never default to a past year. Never invent a different year.
+
+BRAND COLOR:
+You will be given a hex color. Use this hex as the primary accent throughout the site \u2014 CTAs (buttons, links), heading emphasis, hover states, decorative elements (underlines, dividers, callouts). The reference design's palette informs mood and proportions; the brand color defines the actual primary accent.
+
+Default to ample neutral whitespace. The brand color should be the eye-catching highlight, not the dominant surface. If the reference uses bold full-bleed color blocks, you may use the brand color for those \u2014 but always preserve enough neutral background that the brand color reads as intentional accent rather than wall-of-color.
+
+Use the exact hex provided. Do not approximate or "improve" it.
 
 DECORATIVE ASSETS (sprinkle these in, do not omit):
 - /grain.png \u2014 subtle full-page background overlay. Apply via CSS as fixed-position background with opacity 0.05 and mix-blend-mode: multiply for warmth.
@@ -135,6 +146,7 @@ ${b.anythingSpecial ? `- Notes: ${b.anythingSpecial}` : ''}
 
 The current year is ${options.currentYear}.
 photo1 orientation: ${options.photo1Orientation}. photo2 orientation: ${options.photo2Orientation}.
+Brand color: ${options.brandColor}
 ${terms ? `\nVertical-specific terminology:\n${terms}\n` : ''}
 Generate the HTML now.`
 }
