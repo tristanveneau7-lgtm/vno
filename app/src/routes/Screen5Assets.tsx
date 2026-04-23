@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../components/PhoneShell'
 import { Header } from '../components/Header'
 import { ContinueButton } from '../components/ContinueButton'
 import { tokens } from '../lib/tokens'
-import { useQuiz } from '../lib/store'
+import { useQuiz, type PaletteSlot } from '../lib/store'
 import { useCanContinue } from '../lib/validation'
-import { extractLogoColor } from '../lib/extractLogoColor'
+import { extractLogoPalette } from '../lib/extractLogoColor'
 
 type Target = 'logo' | 'photo1' | 'photo2'
-type BrandColorMode = 'logo' | 'custom' | null
+type PaletteSource = 'extracted' | 'manual' | null
 
 export function Screen5Assets() {
   const navigate = useNavigate()
@@ -19,39 +19,39 @@ export function Screen5Assets() {
     photo2: photo2DataUrl,
     photo1Orientation,
     photo2Orientation,
-    brandColor,
+    palette,
   } = useQuiz((s) => s.assets)
   const setLogo = useQuiz((s) => s.setLogo)
   const setPhoto = useQuiz((s) => s.setPhoto)
   const setPhotoOrientation = useQuiz((s) => s.setPhotoOrientation)
-  const setBrandColor = useQuiz((s) => s.setBrandColor)
+  const setPaletteColor = useQuiz((s) => s.setPaletteColor)
   const canContinue = useCanContinue(5)
 
   const fileInput = useRef<HTMLInputElement>(null)
   const target = useRef<Target>('logo')
-  const colorInput = useRef<HTMLInputElement>(null)
-  // Which method last populated brandColor. Tracked locally (useState) because
-  // we can't recover the origin from the hex alone, and the active-toggle
-  // styling needs it. Transient UI flag — not persisted, not in the store.
-  const [brandColorMode, setBrandColorMode] = useState<BrandColorMode>(null)
-  // Previous logoDataUrl, held in a ref so the effect below can detect real
-  // logo changes without firing on unrelated re-renders (e.g. when
-  // brandColorMode transitions to 'logo' as part of the extraction flow).
+
+  // How the current palette was produced. 'extracted' = populated by the
+  // "From my logo" tap; 'manual' = any per-swatch override via the native
+  // color picker. Tracked in a ref (not state) because no render depends on
+  // it — only this component's pick handlers and the effect below read it.
+  const paletteSourceRef = useRef<PaletteSource>(null)
+  // Previous logoDataUrl, held in a ref so the effect below only fires on
+  // real logo changes, not on unrelated re-renders.
   const prevLogoRef = useRef<string | null>(logoDataUrl)
 
-  // If the user swaps logos after having extracted a logo-derived brand
-  // color, invalidate the stale hex and force a re-tap of "From my logo".
-  // Custom picks are preserved — they don't depend on the logo. Mirrors the
-  // setPhoto → clear-orientation pattern in the store: a new upload
-  // invalidates the prior assumption about the asset.
+  // Swapping the logo invalidates an extracted palette (the colors no
+  // longer reflect the current logo). Manual per-slot overrides survive the
+  // change because they're explicit user choices, not logo-derived.
   useEffect(() => {
     if (prevLogoRef.current === logoDataUrl) return
     prevLogoRef.current = logoDataUrl
-    if (brandColorMode === 'logo') {
-      setBrandColor('')
-      setBrandColorMode(null)
+    if (paletteSourceRef.current === 'extracted') {
+      setPaletteColor('primary', '')
+      setPaletteColor('secondary', '')
+      setPaletteColor('accent', '')
+      paletteSourceRef.current = null
     }
-  }, [logoDataUrl, brandColorMode, setBrandColor])
+  }, [logoDataUrl, setPaletteColor])
 
   const pick = (t: Target) => {
     target.current = t
@@ -74,24 +74,22 @@ export function Screen5Assets() {
     reader.readAsDataURL(file)
   }
 
-  // Re-runnable by design: every tap re-extracts from the current logo.
-  // Swapping the logo invalidates a prior logo-derived brandColor via the
-  // useEffect above, so the user is forced back into an explicit re-tap.
-  const pickLogoColor = async () => {
+  // Re-runnable by design: every tap re-extracts from the current logo and
+  // overwrites all three slots. Swapping the logo with an extracted palette
+  // still in place clears it via the effect above, forcing a deliberate
+  // re-tap. Errors are swallowed — we don't want a mid-demo dialog for a
+  // color heuristic; the user can override any slot manually instead.
+  const pickLogoPalette = async () => {
     if (!logoDataUrl) return
     try {
-      const hex = await extractLogoColor(logoDataUrl)
-      setBrandColor(hex)
-      setBrandColorMode('logo')
+      const [primary, secondary, accent] = await extractLogoPalette(logoDataUrl)
+      setPaletteColor('primary', primary)
+      setPaletteColor('secondary', secondary)
+      setPaletteColor('accent', accent)
+      paletteSourceRef.current = 'extracted'
     } catch (err) {
-      // Swallow: we don't want a mid-demo error dialog for a color heuristic.
-      // The user can fall back to "Pick custom".
-      console.warn('logo color extraction failed', err)
+      console.warn('logo palette extraction failed', err)
     }
-  }
-
-  const pickCustomColor = () => {
-    colorInput.current?.click()
   }
 
   return (
@@ -220,70 +218,92 @@ export function Screen5Assets() {
       </div>
 
       {/*
-        Brand color — the primary accent the cloner honors in CTAs, headings,
-        hover states, and decorative elements. Two paths: extract dominant
-        non-white from the uploaded logo, or pick any hex via the native
-        color input. Active-state styling mirrors the orientation toggles
-        above. Continue is gated on brandColor !== '' (see validation.ts).
+        Brand palette — three hex colors with semantic roles (primary,
+        secondary, accent) that the cloner honors across the generated site.
+        "From my logo" extracts all three in one tap via the canvas-sampling
+        heuristic; each swatch below is independently tappable to override
+        the extraction or fill in a slot manually. Continue is gated on all
+        three being non-empty (see validation.ts).
+
+        iOS click pattern: each swatch is rendered as a <label> wrapping a
+        visually-hidden <input type="color">. Tapping the label invokes the
+        native picker on iOS Safari without needing a programmatic
+        ref.click() — that approach is broken on iOS for hidden color
+        inputs, which is what we're specifically routing around here.
       */}
       <div style={{ marginBottom: 22 }}>
         <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#888', margin: '0 0 6px' }}>
-          Brand color
+          Brand palette
         </div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          {([
-            { id: 'logo' as const, label: 'From my logo', onClick: pickLogoColor, disabled: !logoDataUrl },
-            { id: 'custom' as const, label: 'Pick custom', onClick: pickCustomColor, disabled: false },
-          ]).map(({ id, label, onClick, disabled }) => {
-            const active = brandColorMode === id
+        <button
+          type="button"
+          onClick={pickLogoPalette}
+          disabled={!logoDataUrl}
+          style={{
+            width: '100%',
+            padding: '6px 4px',
+            fontSize: 10,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            background: tokens.surface,
+            color: tokens.textPrimary,
+            border: `0.5px solid ${tokens.border}`,
+            borderRadius: tokens.radius.button,
+            fontFamily: 'inherit',
+            cursor: logoDataUrl ? 'pointer' : 'not-allowed',
+            opacity: logoDataUrl ? 1 : 0.35,
+            marginBottom: 10,
+          }}
+        >
+          From my logo
+        </button>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          {(['primary', 'secondary', 'accent'] as const).map((slot: PaletteSlot) => {
+            const hex = palette[slot]
             return (
-              <button
-                key={id}
-                type="button"
-                onClick={onClick}
-                disabled={disabled}
+              <label
+                key={slot}
                 style={{
-                  flex: 1,
-                  padding: '6px 4px',
-                  fontSize: 10,
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
-                  background: active ? tokens.accent : tokens.surface,
-                  color: active ? tokens.accentText : tokens.textPrimary,
-                  border: `0.5px solid ${active ? tokens.accent : tokens.border}`,
-                  borderRadius: tokens.radius.button,
-                  fontFamily: 'inherit',
-                  cursor: disabled ? 'not-allowed' : 'pointer',
-                  opacity: disabled ? 0.35 : 1,
+                  position: 'relative',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 4,
+                  cursor: 'pointer',
                 }}
               >
-                {label}
-              </button>
+                <div style={{ fontSize: 10, letterSpacing: '0.08em', color: '#888', textTransform: 'uppercase' }}>
+                  {slot}
+                </div>
+                <div style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: tokens.radius.button,
+                  border: `0.5px solid ${tokens.border}`,
+                  background: hex || 'transparent',
+                }} />
+                <div style={{ fontSize: 11, color: tokens.textPrimary, fontFamily: 'monospace', letterSpacing: '0.02em' }}>
+                  {hex || '\u2014'}
+                </div>
+                <input
+                  type="color"
+                  value={hex || '#000000'}
+                  onChange={(e) => {
+                    setPaletteColor(slot, e.target.value)
+                    paletteSourceRef.current = 'manual'
+                  }}
+                  style={{
+                    position: 'absolute',
+                    width: 1,
+                    height: 1,
+                    opacity: 0,
+                    pointerEvents: 'none',
+                  }}
+                />
+              </label>
             )
           })}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 32,
-            height: 32,
-            borderRadius: tokens.radius.button,
-            border: `0.5px solid ${tokens.border}`,
-            background: brandColor || 'transparent',
-          }} />
-          <div style={{ fontSize: 12, color: tokens.textPrimary, fontFamily: 'monospace', letterSpacing: '0.02em' }}>
-            {brandColor || '\u2014'}
-          </div>
-        </div>
-        <input
-          ref={colorInput}
-          type="color"
-          value={brandColor || '#000000'}
-          onChange={(e) => {
-            setBrandColor(e.target.value)
-            setBrandColorMode('custom')
-          }}
-          style={{ display: 'none' }}
-        />
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>

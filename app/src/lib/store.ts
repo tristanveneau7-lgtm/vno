@@ -42,13 +42,23 @@ export interface Assets {
   photo1Orientation: PhotoOrientation
   photo2Orientation: PhotoOrientation
   /**
-   * Hex color string like "#1a2b3c" — the prospect's brand primary accent.
-   * Either extracted from their logo (dominant non-white) or picked via a
-   * native color input. Empty string means "not yet chosen"; Screen 5 gates
-   * continue on this being set, and the engine validates the hex shape.
+   * Three hex colors with semantic roles that the cloner honors across the
+   * generated site: primary (dominant CTAs, hero accents, brand-bar), secondary
+   * (supporting CTAs, alternating section accents), accent (hover states,
+   * badges, micro-decorations). Each slot is either extracted from the logo
+   * via {@link extractLogoPalette} or overridden individually via the native
+   * color picker on Screen 5. Empty string on any slot means "not yet set";
+   * Screen 5 gates continue on all three being non-empty, and the engine
+   * validates each slot's hex shape on the /build request.
    */
-  brandColor: string
+  palette: {
+    primary: string
+    secondary: string
+    accent: string
+  }
 }
+
+export type PaletteSlot = 'primary' | 'secondary' | 'accent'
 
 export interface ReferenceChoice {
   url: string
@@ -77,7 +87,7 @@ export interface QuizState {
   setLogo: (dataUrl: string | null) => void
   setPhoto: (slot: 1 | 2, dataUrl: string | null) => void
   setPhotoOrientation: (slot: 1 | 2, orientation: Exclude<PhotoOrientation, null>) => void
-  setBrandColor: (hex: string) => void
+  setPaletteColor: (slot: PaletteSlot, hex: string) => void
   setAnythingSpecial: (text: string) => void
   reset: () => void
 }
@@ -87,7 +97,14 @@ const initialState = {
   business: { name: '', address: '', phone: '', hours: '', slogan: '' },
   sections: { landing: true as const, gallery: true, phoneCta: true, booking: true, pricing: false, about: false },
   reference: null,
-  assets: { logo: null, photo1: null, photo2: null, photo1Orientation: null, photo2Orientation: null, brandColor: '' } as Assets,
+  assets: {
+    logo: null,
+    photo1: null,
+    photo2: null,
+    photo1Orientation: null,
+    photo2Orientation: null,
+    palette: { primary: '', secondary: '', accent: '' },
+  } as Assets,
   anythingSpecial: '',
 }
 
@@ -113,7 +130,9 @@ export const useQuiz = create<QuizState>()(
       setPhotoOrientation: (slot, orientation) => set((s) => ({
         assets: { ...s.assets, [`photo${slot}Orientation`]: orientation },
       })),
-      setBrandColor: (hex) => set((s) => ({ assets: { ...s.assets, brandColor: hex } })),
+      setPaletteColor: (slot, hex) => set((s) => ({
+        assets: { ...s.assets, palette: { ...s.assets.palette, [slot]: hex } },
+      })),
       setAnythingSpecial: (text) => set({ anythingSpecial: text }),
       reset: () => set(initialState),
     }),

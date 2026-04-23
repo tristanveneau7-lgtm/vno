@@ -56,19 +56,36 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     }
     console.log(`[${requestId}] orientations: photo1=${photo1Orientation}, photo2=${photo2Orientation}`)
 
-    // Brand color is a 6-digit hex picked (or logo-extracted) on Screen 5. We
-    // reject bad input with a 400 rather than routing through the generic 500
-    // catch — it's a client-shape problem, not a pipeline failure, and the
-    // cloner prompt trusts this value verbatim so we must guarantee shape here.
-    const brandColor: unknown = req.body.assets?.brandColor
-    if (typeof brandColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(brandColor)) {
+    // Brand palette: three 6-digit hex slots (primary / secondary / accent).
+    // Each is either extracted from the uploaded logo or picked per-swatch
+    // on Screen 5. We validate the container is an object, then each slot
+    // independently so the 400 error message pinpoints which slot is wrong
+    // — helps debugging if the client sends a partial or malformed payload.
+    // 400 (not 500) for the same reasons as before: client-shape problem,
+    // not a pipeline failure, and the cloner prompt trusts these values
+    // verbatim so we must guarantee shape here.
+    const palette: unknown = req.body.assets?.palette
+    if (palette === null || typeof palette !== 'object') {
       const buildTime = ((Date.now() - startTime) / 1000).toFixed(1)
-      const message = 'Missing or invalid assets.brandColor'
-      console.log(`[${requestId}] \u2717 ${message} after ${buildTime}s (value: ${JSON.stringify(brandColor)})`)
+      const message = 'Missing or invalid assets.palette'
+      console.log(`[${requestId}] \u2717 ${message} after ${buildTime}s (value: ${JSON.stringify(palette)})`)
       res.status(400).json({ requestId, error: message, phase: 5 })
       return
     }
-    console.log(`[${requestId}] brandColor: ${brandColor}`)
+    const HEX_RE = /^#[0-9a-fA-F]{6}$/
+    const paletteSlots = ['primary', 'secondary', 'accent'] as const
+    for (const slot of paletteSlots) {
+      const value = (palette as Record<string, unknown>)[slot]
+      if (typeof value !== 'string' || !HEX_RE.test(value)) {
+        const buildTime = ((Date.now() - startTime) / 1000).toFixed(1)
+        const message = `Missing or invalid assets.palette.${slot}`
+        console.log(`[${requestId}] \u2717 ${message} after ${buildTime}s (value: ${JSON.stringify(value)})`)
+        res.status(400).json({ requestId, error: message, phase: 5 })
+        return
+      }
+    }
+    const validPalette = palette as { primary: string; secondary: string; accent: string }
+    console.log(`[${requestId}] palette: primary=${validPalette.primary} secondary=${validPalette.secondary} accent=${validPalette.accent}`)
 
     const business: BusinessInfo = {
       name: req.body.business.name,
@@ -126,7 +143,7 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     // and we don't want to pay for two concurrent Claude calls if the first
     // would have succeeded.
     console.log(`[${requestId}] \u2192 cloning...`)
-    const cloneOptions = { currentYear, photo1Orientation, photo2Orientation, brandColor }
+    const cloneOptions = { currentYear, photo1Orientation, photo2Orientation, palette: validPalette }
     let html: string
     try {
       html = await cloneToHtml(screenshot, business, req.body.reference.url, cloneOptions)

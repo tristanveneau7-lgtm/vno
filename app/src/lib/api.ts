@@ -25,10 +25,10 @@ export async function postBuild(payload: BuildPayload): Promise<BuildResponse> {
     body: JSON.stringify(payload),
   })
   if (!res.ok) {
-    // Engine 4xx (e.g. malformed brandColor) and 5xx errors come back in a
-    // shared shape: { requestId, error, phase }. Surface the engine's error
-    // string when present so the phone shows something more useful than a
-    // bare status line.
+    // Engine 4xx (e.g. malformed palette slot) and 5xx errors come back in
+    // a shared shape: { requestId, error, phase }. Surface the engine's
+    // error string when present so the phone shows something more useful
+    // than a bare status line.
     let detail = `${res.status} ${res.statusText}`
     try {
       const body = (await res.json()) as { error?: string }

@@ -22,15 +22,20 @@ export interface BusinessInfo {
  * Per-build context the cloner needs that isn't part of the business info
  * itself. currentYear is computed by build.ts (never hardcoded in this file);
  * the orientations are human-tagged by the prospect on Screen 5 of the app
- * and forwarded verbatim through req.body.assets. brandColor is a 6-digit
- * hex string (e.g. "#1a2b3c") — shape is validated at the build route before
- * it reaches here, so the cloner trusts it verbatim.
+ * and forwarded verbatim through req.body.assets. palette is three 6-digit
+ * hex strings with semantic roles (primary / secondary / accent) — each
+ * slot's shape is validated at the build route before it reaches here, so
+ * the cloner trusts the values verbatim.
  */
 export interface CloneOptions {
   currentYear: number
   photo1Orientation: 'portrait' | 'landscape'
   photo2Orientation: 'portrait' | 'landscape'
-  brandColor: string
+  palette: {
+    primary: string
+    secondary: string
+    accent: string
+  }
 }
 
 const SYSTEM_PROMPT = `You are a web designer building a one-page landing site for a local small business.
@@ -41,7 +46,7 @@ You will be given:
 3. Vertical-specific terminology guidance
 4. The current year
 5. The orientation (portrait or landscape) of each supplied photo
-6. A brand color (hex) to use as the primary accent
+6. A brand palette \u2014 three hex colors with semantic roles (primary, secondary, accent)
 
 Your job: produce a SINGLE HTML FILE that looks visually similar to the reference, but with all content replaced to match the target business AND the target's actual provided assets used in specific positions.
 
@@ -61,12 +66,15 @@ You will be told whether each photo is portrait or landscape. Use this to choose
 YEAR:
 The current year is provided to you. Use that exact year in the EST badge, the copyright footer, and any "established" or "since" language. Never write "YYYY" literally. Never default to a past year. Never invent a different year.
 
-BRAND COLOR:
-You will be given a hex color. Use this hex as the primary accent throughout the site \u2014 CTAs (buttons, links), heading emphasis, hover states, decorative elements (underlines, dividers, callouts). The reference design's palette informs mood and proportions; the brand color defines the actual primary accent.
+BRAND PALETTE:
+You will be given three hex colors with semantic roles. Use them throughout the site as follows:
+- PRIMARY \u2014 the dominant brand color. Use for the most prominent surfaces and brand-defining elements: primary CTA backgrounds, hero accents, brand-bar areas, large headings where the brand should assert itself.
+- SECONDARY \u2014 the supporting brand color. Use for secondary CTAs, alternating section accents, complementary surfaces, callout backgrounds, anywhere a second color is needed to add depth without competing with primary.
+- ACCENT \u2014 the small-dose pop color. Use sparingly for hover states, badges, link underlines, micro-decorations, dividers, and high-contrast details. Should appear in small areas, not large surfaces.
 
-Default to ample neutral whitespace. The brand color should be the eye-catching highlight, not the dominant surface. If the reference uses bold full-bleed color blocks, you may use the brand color for those \u2014 but always preserve enough neutral background that the brand color reads as intentional accent rather than wall-of-color.
+Default to ample neutral whitespace. The palette colors should feel intentional and proportioned: primary appears with confidence in 2-4 places, secondary supports in 2-3 places, accent punctuates in 4-6 small details. Do not flood the site with palette colors \u2014 neutral background and body text remain the dominant surface.
 
-Use the exact hex provided. Do not approximate or "improve" it.
+Use the exact hex values provided. Do not approximate, blend, or "improve" them.
 
 DECORATIVE ASSETS (sprinkle these in, do not omit):
 - /grain.png \u2014 subtle full-page background overlay. Apply via CSS as fixed-position background with opacity 0.05 and mix-blend-mode: multiply for warmth.
@@ -146,7 +154,9 @@ ${b.anythingSpecial ? `- Notes: ${b.anythingSpecial}` : ''}
 
 The current year is ${options.currentYear}.
 photo1 orientation: ${options.photo1Orientation}. photo2 orientation: ${options.photo2Orientation}.
-Brand color: ${options.brandColor}
+Primary color: ${options.palette.primary}
+Secondary color: ${options.palette.secondary}
+Accent color: ${options.palette.accent}
 ${terms ? `\nVertical-specific terminology:\n${terms}\n` : ''}
 Generate the HTML now.`
 }
