@@ -11,6 +11,7 @@ import sharp from 'sharp'
 export async function processLogo(base64DataUri: string): Promise<Buffer> {
   const buf = base64ToBuffer(base64DataUri)
   return sharp(buf)
+    .rotate()
     .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
     .png({ compressionLevel: 9 })
     .toBuffer()
@@ -27,6 +28,7 @@ export async function processLogo(base64DataUri: string): Promise<Buffer> {
 export async function processPhoto(base64DataUri: string): Promise<Buffer> {
   const buf = base64ToBuffer(base64DataUri)
   return sharp(buf)
+    .rotate()
     .resize(1920, null, { fit: 'inside', withoutEnlargement: true })
     .jpeg({ quality: 90, mozjpeg: true })
     .toBuffer()
