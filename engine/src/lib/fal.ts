@@ -10,6 +10,18 @@ const BADGE_PROMPT = (year: string) =>
 const SKETCH_PROMPT =
   'hand-drawn flourish, single ink stroke underline with small flourish at end, organic, casual, transparent background, monochrome'
 
+/**
+ * fal.ai birefnet/v2 model variant to use for cutouts. Phase Tampa Item 1
+ * Step 3 provider pick: BiRefNet (bilateral reference network) is the
+ * state-of-the-art open-weights segmentation model in 2025-26 and fal.ai's
+ * v2 endpoint exposes six variants. "General Use (Heavy)" is tuned for
+ * general photography (storefronts, interiors, product, people) which
+ * covers our four photo roles. @imgly/background-removal-node was
+ * considered and rejected due to AGPL v3 license incompatibility with
+ * VNO's closed-source engine (AGPL §13 network-service clause).
+ */
+const BIREFNET_MODEL = 'General Use (Heavy)' as const
+
 export interface DecorativeAssets {
   grain: Buffer
   badge: Buffer
@@ -61,4 +73,54 @@ async function generateImage(
   }
   const arrayBuffer = await response.arrayBuffer()
   return Buffer.from(arrayBuffer)
+}
+
+/**
+ * Remove the background from a photo, returning a PNG buffer with alpha.
+ *
+ * Uses fal.ai's BiRefNet v2 endpoint (see {@link BIREFNET_MODEL} for the
+ * variant pick + provider reasoning). `refine_foreground: true` applies a
+ * post-pass that cleans up edge feathering — the extra ~100-200ms is worth
+ * it for hair/fur cases that would otherwise shred.
+ *
+ * The input buffer is uploaded to fal.ai's storage via the client's
+ * `fal.storage.upload` helper (it accepts a Blob; we wrap the raw buffer
+ * in one). Passing a data URI directly as `image_url` is the other
+ * supported path but fails or truncates for >1MB inputs, which our 1920-
+ * wide JPEGs frequently exceed — the storage upload is more reliable.
+ *
+ * Typical wall-clock: ~1-2s (upload + inference + download). Well under
+ * Item 1's <3s/photo budget. Cost: ~$0.01-0.02 per call (confirmed on
+ * first live build — see Item 1 Step 3 smoke run).
+ */
+export async function removeBackground(imageBuf: Buffer): Promise<Buffer> {
+  // Blob wrap so we can hand off to fal.storage.upload. The MIME hint is
+  // decorative — fal detects by content, but correct MIME helps debuggers.
+  // Wrapping the Buffer in a Uint8Array view (zero-copy) instead of
+  // passing the Buffer directly keeps the Blob constructor type-safe
+  // regardless of whether @types/node exposes Buffer.buffer as
+  // ArrayBufferLike vs strict ArrayBuffer (the standalone-tsc delta).
+  const view = new Uint8Array(imageBuf.buffer, imageBuf.byteOffset, imageBuf.byteLength)
+  const blob = new Blob([view], { type: 'image/jpeg' })
+  const imageUrl = await fal.storage.upload(blob)
+
+  const result = (await fal.subscribe('fal-ai/birefnet/v2', {
+    input: {
+      image_url: imageUrl,
+      model: BIREFNET_MODEL,
+      refine_foreground: true,
+      output_format: 'png',
+    },
+    logs: false,
+  })) as { data?: { image?: { url: string } } }
+
+  const resultUrl = result.data?.image?.url
+  if (!resultUrl) throw new Error('fal.ai birefnet returned no image')
+
+  const response = await fetch(resultUrl)
+  if (!response.ok) {
+    throw new Error(`Failed to download fal.ai cutout: ${response.status}`)
+  }
+  const ab = await response.arrayBuffer()
+  return Buffer.from(ab)
 }

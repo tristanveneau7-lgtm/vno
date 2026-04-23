@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { termsFor } from './glossary.js'
+import type { BrandPalette, ProcessedAsset } from './assets.js'
 
 let _anthropic: Anthropic | null = null
 function getClient(): Anthropic {
@@ -26,16 +27,22 @@ export interface BusinessInfo {
  * hex strings with semantic roles (primary / secondary / accent) — each
  * slot's shape is validated at the build route before it reaches here, so
  * the cloner trusts the values verbatim.
+ *
+ * `photos` carries the full set of processed assets including their raw /
+ * duotone / cutout variants (Phase Tampa Item 1). The pre-Tampa cloner
+ * doesn't consume this field — it's pure plumbing so the Item 5 cloner
+ * upgrade can reach through `photos[i].variants.<variant>` once the Art
+ * Director's decision record starts specifying which variant to use per
+ * slot. Every entry carries its `role` and `orientation`; logos appear in
+ * the array too (with `orientation: null`) so the Item 5 prompt can key
+ * off role rather than array position.
  */
 export interface CloneOptions {
   currentYear: number
   photo1Orientation: 'portrait' | 'landscape'
   photo2Orientation: 'portrait' | 'landscape'
-  palette: {
-    primary: string
-    secondary: string
-    accent: string
-  }
+  palette: BrandPalette
+  photos: ProcessedAsset[]
 }
 
 const SYSTEM_PROMPT = `You are a web designer building a one-page landing site for a local small business.

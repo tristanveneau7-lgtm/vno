@@ -5,6 +5,7 @@ import { cloneToHtml, type BusinessInfo } from '../lib/cloner.js'
 import {
   processLogo,
   processPhoto,
+  type BrandPalette,
   type PhotoRole,
   type ProcessedAsset,
 } from '../lib/assets.js'
@@ -153,7 +154,7 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
         return
       }
     }
-    const validPalette = palette as { primary: string; secondary: string; accent: string }
+    const validPalette: BrandPalette = palette as BrandPalette
     console.log(`[${requestId}] palette: primary=${validPalette.primary} secondary=${validPalette.secondary} accent=${validPalette.accent}`)
 
     // Map roles to the legacy photo1 / photo2 slots the cloner still expects.
@@ -232,8 +233,8 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     const [screenshot, logoAsset, heroAsset, secondaryAsset, decorative] = await Promise.all([
       refImageUrl ? pngBufferFromMediaUrl(refImageUrl) : screenshotUrl(req.body.reference.url),
       processLogo(byRole.logo.dataUrl),
-      processPhoto(heroInput.dataUrl, heroRole, heroOrientation),
-      processPhoto(secondaryInput.dataUrl, secondaryRole, secondaryOrientation),
+      processPhoto(heroInput.dataUrl, heroRole, heroOrientation, validPalette),
+      processPhoto(secondaryInput.dataUrl, secondaryRole, secondaryOrientation, validPalette),
       generateDecorativeAssets(currentYear.toString()),
     ])
     // Keep the full set of processed assets in scope under a stable name
@@ -244,7 +245,13 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     console.log(`[${requestId}]   screenshot: ${screenshot.length} bytes`)
     for (const a of processedAssets) {
       const orient = a.orientation ? ` ${a.orientation}` : ''
-      console.log(`[${requestId}]   ${a.role}${orient}: ${a.buffer.length} bytes`)
+      // Variant byte counts logged per-slot. Raw / duotone / cutout are all
+      // generated up-front (Item 1); logos point all three at the same
+      // buffer as a passthrough, so identical sizes there are expected.
+      const v = a.variants
+      console.log(
+        `[${requestId}]   ${a.role}${orient}: raw=${v.raw.length}b duotone=${v.duotone.length}b cutout=${v.cutout.length}b`
+      )
     }
     console.log(`[${requestId}]   grain: ${decorative.grain.length} bytes`)
     console.log(`[${requestId}]   badge: ${decorative.badge.length} bytes`)
@@ -259,6 +266,11 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
       photo1Orientation: heroOrientation,
       photo2Orientation: secondaryOrientation,
       palette: validPalette,
+      // Full set of processed assets + their variants (Phase Tampa Item 1).
+      // Pre-Tampa cloner ignores this field; Item 5 starts consuming
+      // variants by role once the Art Director decides which variant to
+      // use per slot.
+      photos: processedAssets,
     }
     let html: string
     try {
@@ -272,10 +284,14 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     // Sequential: deploy 7 files (index + logo + hero + photo2 + 3 decoratives).
     // Paths here MUST match the paths referenced by the cloner's system prompt.
     const slug = slugify(business.name)
+    // Deploy paths still reference the raw variant only — the cloner's
+    // system prompt hardcodes /logo.png, /hero.jpg, /photo2.jpg (pre-Tampa
+    // behavior preserved). Item 5 is where the cloner starts consuming
+    // non-raw variants by URL and we add additional deploy entries.
     const assets: AssetFile[] = [
-      { path: '/logo.png', buffer: logoAsset.buffer, contentType: 'image/png' },
-      { path: '/hero.jpg', buffer: heroAsset.buffer, contentType: 'image/jpeg' },
-      { path: '/photo2.jpg', buffer: secondaryAsset.buffer, contentType: 'image/jpeg' },
+      { path: '/logo.png', buffer: logoAsset.variants.raw, contentType: 'image/png' },
+      { path: '/hero.jpg', buffer: heroAsset.variants.raw, contentType: 'image/jpeg' },
+      { path: '/photo2.jpg', buffer: secondaryAsset.variants.raw, contentType: 'image/jpeg' },
       { path: '/grain.png', buffer: decorative.grain, contentType: 'image/png' },
       { path: '/badge.png', buffer: decorative.badge, contentType: 'image/png' },
       { path: '/sketch.png', buffer: decorative.sketch, contentType: 'image/png' },
