@@ -23,6 +23,8 @@ import type Anthropic from '@anthropic-ai/sdk'
 import {
   runArtDirector,
   __setMessagesCreateForTesting,
+  ART_DIRECTOR_JSON_SCHEMA,
+  sanitizeJsonSchemaForAnthropic,
   type ArtDirectorInput,
 } from '../lib/artDirector.js'
 import { SAMPLE_DECISION } from '../types/artDirector.js'
@@ -183,6 +185,210 @@ test('runArtDirector: first fails validation, second succeeds → resolves after
 
   assert.equal(mock.calls, 2, 'stub should be called exactly twice (one retry)')
   assert.deepEqual(decision, SAMPLE_DECISION, 'returned decision should be the second (valid) response')
+})
+
+// -----------------------------------------------------------------------------
+// Anthropic JSON Schema sanitization (Item 5 regression — Anthropic's
+// tool-use validator rejects validation keywords like maxItems/format/etc.
+// We strip them from the schema we send, keep zod as the runtime truth.)
+// -----------------------------------------------------------------------------
+
+test('ART_DIRECTOR_JSON_SCHEMA: no unsupported validation keywords survive sanitization', () => {
+  // Keywords Anthropic's tool-use validator is known (or strongly
+  // suspected) to reject. Must match the set maintained in
+  // artDirector.ts. Walk the schema tree and assert none appear anywhere.
+  const UNSUPPORTED = [
+    'maxItems', 'minItems', 'uniqueItems',
+    'minLength', 'maxLength', 'pattern', 'format',
+    'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+    'minProperties', 'maxProperties', 'patternProperties',
+  ]
+
+  function walk(node: unknown, path: string): string[] {
+    if (Array.isArray(node)) {
+      return node.flatMap((item, i) => walk(item, `${path}[${i}]`))
+    }
+    if (node !== null && typeof node === 'object') {
+      const findings: string[] = []
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        if (UNSUPPORTED.includes(k)) findings.push(`${path}.${k}`)
+        findings.push(...walk(v, `${path}.${k}`))
+      }
+      return findings
+    }
+    return []
+  }
+
+  const findings = walk(ART_DIRECTOR_JSON_SCHEMA, '$')
+  assert.deepEqual(
+    findings,
+    [],
+    `ART_DIRECTOR_JSON_SCHEMA contains unsupported validation keywords at: ${findings.join(', ')}`,
+  )
+})
+
+test('ART_DIRECTOR_JSON_SCHEMA: every object-shaped node has additionalProperties === false', () => {
+  // Anthropic's tool-use validator 400s on `additionalProperties` set
+  // to anything other than `false` (or absent). z.record(...) emits an
+  // object-valued additionalProperties; .strict() zod objects emit
+  // false; unannotated objects emit undefined. The sanitizer normalizes
+  // all three to the literal `false`. This test walks the actual
+  // exported schema and asserts that invariant end-to-end.
+
+  type ObjectNode = { path: string; additionalProperties: unknown }
+  function walkObjects(node: unknown, path = '$'): ObjectNode[] {
+    if (Array.isArray(node)) {
+      return node.flatMap((item, i) => walkObjects(item, `${path}[${i}]`))
+    }
+    if (node !== null && typeof node === 'object') {
+      const rec = node as Record<string, unknown>
+      const out: ObjectNode[] = []
+      const isObjectShaped = rec.type === 'object' || 'properties' in rec
+      if (isObjectShaped) {
+        out.push({ path, additionalProperties: rec.additionalProperties })
+      }
+      for (const [k, v] of Object.entries(rec)) {
+        out.push(...walkObjects(v, `${path}.${k}`))
+      }
+      return out
+    }
+    return []
+  }
+
+  const objectNodes = walkObjects(ART_DIRECTOR_JSON_SCHEMA)
+  assert.ok(objectNodes.length > 0, 'sanity check: at least one object-shaped node in schema')
+  const offenders = objectNodes.filter((n) => n.additionalProperties !== false)
+  assert.deepEqual(
+    offenders,
+    [],
+    `object-shaped nodes with additionalProperties !== false: ${JSON.stringify(offenders, null, 2)}`,
+  )
+})
+
+test('sanitizeJsonSchemaForAnthropic: coerces object-valued additionalProperties to false', () => {
+  // z.record(...) emits this exact shape — the root cause of the
+  // Anthropic 400 that this fix responds to.
+  const input = {
+    type: 'object',
+    properties: {
+      confidence: {
+        type: 'object',
+        additionalProperties: { type: 'number' }, // object-valued → must become false
+      },
+    },
+  }
+  const out = sanitizeJsonSchemaForAnthropic(input) as typeof input
+  assert.equal(out.properties.confidence.additionalProperties, false)
+})
+
+test('sanitizeJsonSchemaForAnthropic: adds additionalProperties: false on object nodes missing it', () => {
+  // An unannotated zod object (no .strict(), no .passthrough()) might
+  // emit a node without additionalProperties. Anthropic wants it
+  // explicit — the sanitizer adds it.
+  const input = {
+    type: 'object',
+    properties: {
+      inner: { type: 'object', properties: { x: { type: 'string' } } },
+    },
+  }
+  const out = sanitizeJsonSchemaForAnthropic(input) as typeof input & {
+    additionalProperties: unknown
+    properties: { inner: { additionalProperties: unknown } }
+  }
+  assert.equal(out.additionalProperties, false, 'root object gets additionalProperties: false')
+  assert.equal(out.properties.inner.additionalProperties, false, 'nested object gets additionalProperties: false')
+})
+
+test('sanitizeJsonSchemaForAnthropic: leaves non-object nodes untouched (no additionalProperties added)', () => {
+  // Strings, arrays, enum-only nodes — none should gain additionalProperties.
+  const input = {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      tags: { type: 'array', items: { type: 'string' } },
+      role: { enum: ['a', 'b'] }, // no type key, no properties — not object-shaped
+    },
+  }
+  const out = sanitizeJsonSchemaForAnthropic(input) as typeof input & {
+    properties: {
+      name: Record<string, unknown>
+      tags: Record<string, unknown>
+      role: Record<string, unknown>
+    }
+  }
+  assert.equal('additionalProperties' in out.properties.name, false, 'string node should not get additionalProperties')
+  assert.equal('additionalProperties' in out.properties.tags, false, 'array node should not get additionalProperties')
+  assert.equal('additionalProperties' in out.properties.role, false, 'enum-only node should not get additionalProperties')
+})
+
+test('sanitizeJsonSchemaForAnthropic: strips maxItems / minLength / format anywhere in the tree', () => {
+  // Direct unit test of the walker — independent of the zod schema so a
+  // refactor of zod-to-json-schema's output shape doesn't mask a bug in
+  // the stripper itself.
+  const input = {
+    type: 'object',
+    properties: {
+      tags: { type: 'array', maxItems: 5, items: { type: 'string', minLength: 1 } },
+      email: { type: 'string', format: 'email', pattern: '.+@.+' },
+      score: { type: 'number', minimum: 0, maximum: 1 },
+      nested: {
+        type: 'object',
+        properties: {
+          list: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string' } },
+        },
+      },
+    },
+  }
+  const out = sanitizeJsonSchemaForAnthropic(input) as typeof input
+  assert.equal('maxItems' in out.properties.tags, false)
+  assert.equal('minLength' in out.properties.tags.items, false)
+  assert.equal('format' in out.properties.email, false)
+  assert.equal('pattern' in out.properties.email, false)
+  assert.equal('minimum' in out.properties.score, false)
+  assert.equal('maximum' in out.properties.score, false)
+  assert.equal('minItems' in out.properties.nested.properties.list, false)
+  assert.equal('uniqueItems' in out.properties.nested.properties.list, false)
+  // Structural keywords survive.
+  assert.equal(out.type, 'object')
+  assert.equal(out.properties.tags.type, 'array')
+  assert.equal(out.properties.tags.items.type, 'string')
+  // Input is not mutated.
+  assert.equal(input.properties.tags.maxItems, 5)
+})
+
+test('runArtDirector: 4-ornament response still rejected at zod layer post-sanitize', async () => {
+  // Regression for the Anthropic-maxItems-stripping fix. The API no
+  // longer enforces focalOrnaments.max(3) server-side (we stripped
+  // maxItems from its view of the schema), but zod's refinement is
+  // unchanged and must still reject over-3 responses in callAndValidate.
+  // If zod stopped catching this, the "scarcity" invariant would quietly
+  // erode and 4+ ornaments would ship.
+  const tooMany = {
+    ...SAMPLE_DECISION,
+    focalOrnaments: [
+      SAMPLE_DECISION.focalOrnaments[0]!,
+      SAMPLE_DECISION.focalOrnaments[0]!,
+      SAMPLE_DECISION.focalOrnaments[0]!,
+      SAMPLE_DECISION.focalOrnaments[0]!,
+    ],
+  }
+  const mock = makeMockCreate([
+    mockToolUseMessage(tooMany),
+    mockToolUseMessage(tooMany),
+  ])
+  __setMessagesCreateForTesting(mock)
+
+  await assert.rejects(
+    () => runArtDirector(TEST_INPUT),
+    (err: Error) => {
+      assert.match(err.message, /failed validation after retry/)
+      // The retry prompt should include zod's specific error about the
+      // max-3 array constraint, which is how the model learns what to fix.
+      return true
+    },
+    'zod must still reject 4 ornaments even though the API schema no longer does',
+  )
+  assert.equal(mock.calls, 2, 'both attempts should fire before the throw')
 })
 
 test('runArtDirector: both attempts fail validation → rejects with "after retry" error', async () => {

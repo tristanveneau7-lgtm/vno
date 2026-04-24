@@ -1,7 +1,13 @@
 import type { Request, Response } from 'express'
 import { nanoid } from 'nanoid'
 import { screenshotUrl } from '../lib/puppeteer.js'
-import { cloneToHtml, type BusinessInfo } from '../lib/cloner.js'
+import {
+  cloneToHtml,
+  type BusinessInfo,
+  type RenderableArtDirection,
+  type RenderableFocalOrnament,
+  type RenderablePhotoPlacement,
+} from '../lib/cloner.js'
 import {
   processLogo,
   processPhoto,
@@ -9,34 +15,42 @@ import {
   type PhotoRole,
   type ProcessedAsset,
 } from '../lib/assets.js'
-import { generateDecorativeAssets } from '../lib/fal.js'
+import { generateFocalOrnaments, type FocalOrnamentWithUrl } from '../lib/fal.js'
+import { runArtDirector } from '../lib/artDirector.js'
+import type { ArtDirectorDecision, PhotoVariantName } from '../types/artDirector.js'
 import { deploySite, slugify, type AssetFile } from '../lib/netlify.js'
 import { isVideoUrl, pngBufferFromMediaUrl } from '../lib/media.js'
 
 /**
- * Phase 5 build pipeline + Phase Tampa Item 0 photo-role plumbing:
+ * Phase Tampa Item 5 build pipeline:
+ *
  *   1. Validate the payload has everything we can't proceed without
- *      (vertical, business name, reference URL, all required prospect
- *      assets). Assets now arrive as assets.photos: Array<{ role, dataUrl,
- *      orientation }> — the old flat logo/photo1/photo2 wire shape is gone.
- *      Logo is required, plus at least 2 of { outside, inside, hero }.
- *   2. In PARALLEL: screenshot reference, process prospect assets via sharp
- *      (each processed asset now carries its role + orientation on the
- *      returned record — no processing change, pure plumbing for Item 3),
- *      generate the three decorative PNGs via fal.ai. Screenshot is the long
- *      pole (~10s); asset processing is ~1-2s; fal.ai is ~5-10s with all
- *      three running concurrently. Fanning out saves ~20s vs. sequential.
- *   3. Sequential clone with one retry (Claude vision is the slowest step and
- *      flaky enough that a single retry recovers most transient failures).
- *      The cloner still consumes photo1/photo2 semantics; we map roles to
- *      those slots here (hero > outside > inside precedence for photo1).
- *      That mapping goes away in Item 5 when the cloner consumes the Art
- *      Director's decision record directly.
- *   4. Multi-file Netlify deploy: index.html + 6 assets at the fixed paths
- *      the cloner's system prompt references (/logo.png, /hero.jpg,
- *      /photo2.jpg, /grain.png, /badge.png, /sketch.png).
- *   5. Return { requestId, url, buildTime, phase: 5 } so the phone can
- *      navigate to /review.
+ *      (vertical, business name, reference URL, logo + at least 2 non-logo
+ *      photos with orientations tagged, palette).
+ *   2. Stage 1 — parallel: screenshot the reference + processLogo +
+ *      processPhoto per non-logo input (each emits raw/duotone/cutout).
+ *   3. Stage 2 — runArtDirector(reference, business, photos, palette).
+ *      Returns a zod-validated ArtDirectorDecision. Throws after one retry.
+ *   4. Stage 3 — generateFocalOrnaments(decision.focalOrnaments).
+ *      Promise.allSettled internally; per-ornament failures surface as
+ *      generationFailed flags, not batch failures.
+ *   5. Stage 4 — download each successful ornament URL to a Buffer in
+ *      parallel. Download failures after generation are treated as
+ *      generationFailed (the cloner sees the flag and skips).
+ *   6. Assemble a RenderableArtDirection — the decision enriched with
+ *      every image reference resolved to a deploy path. The cloner
+ *      renders directly against this record.
+ *   7. Stage 5 — cloneToHtml(screenshot, business, url, {currentYear,
+ *      palette, artDirection}). Claude Sonnet vision call with one retry.
+ *   8. Stage 6 — multi-file Netlify deploy: index.html + logo + used
+ *      photo variants (role × variant, only those the decision
+ *      references) + successful ornaments.
+ *   9. Return { requestId, url, buildTime, phase: 5 }.
+ *
+ * Pre-Tampa /grain.png /badge.png /sketch.png decorative pipeline is
+ * gone — the cloner's TEXTURE section produces atmosphere via inline
+ * CSS/SVG now. Pre-Tampa photo1/photo2 legacy slot mapping is gone too;
+ * the Art Director's hero + placements make those calls.
  *
  * Any failure returns 500 with { requestId, error, phase: 5 }. The app's
  * Screen7Build surfaces that as a red error line under the preview panel.
@@ -51,254 +65,127 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
   console.log(`[${requestId}] reference: ${req.body.reference?.url ?? '(none)'}`)
 
   try {
-    if (!req.body.vertical) throw new Error('Missing vertical')
-    if (!req.body.business?.name) throw new Error('Missing business.name')
-    if (!req.body.reference?.url) throw new Error('Missing reference.url')
-
-    // Phase Tampa Item 0 wire shape: assets.photos is an array of labeled
-    // entries; assets.palette is unchanged. The old flat logo/photo1/photo2
-    // fields are gone. Parse the array into a role-keyed map so the rest of
-    // the route can look up slots by name instead of array index.
-    const photosIn: unknown = req.body.assets?.photos
-    if (!Array.isArray(photosIn)) {
-      throw new Error('Missing or invalid assets.photos (expected array)')
-    }
-    const VALID_ROLES: readonly PhotoRole[] = ['logo', 'outside', 'inside', 'hero'] as const
-    interface InputPhoto {
-      dataUrl: string
-      orientation: 'portrait' | 'landscape' | null
-    }
-    const byRole: Partial<Record<PhotoRole, InputPhoto>> = {}
-    for (const raw of photosIn) {
-      if (!raw || typeof raw !== 'object') {
-        throw new Error('Invalid entry in assets.photos (expected object)')
-      }
-      const entry = raw as Record<string, unknown>
-      const role = entry.role
-      const dataUrl = entry.dataUrl
-      const orientation = entry.orientation
-      if (typeof role !== 'string' || !VALID_ROLES.includes(role as PhotoRole)) {
-        throw new Error(`Invalid assets.photos[].role: ${JSON.stringify(role)}`)
-      }
-      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
-        throw new Error(`Invalid assets.photos[${role}].dataUrl`)
-      }
-      // Orientation contract: logo must be null (logos don't carry the tag);
-      // non-logo must be exactly 'portrait' or 'landscape'. We check string
-      // values explicitly (not just truthiness) because typos like
-      // 'Portrait' or 'PORTRAIT' would silently leak into the cloner prompt
-      // and produce subtly wrong placements — same defense as pre-Tampa.
-      if (role === 'logo') {
-        if (orientation !== null) {
-          throw new Error('assets.photos[logo].orientation must be null')
-        }
-      } else {
-        if (orientation !== 'portrait' && orientation !== 'landscape') {
-          throw new Error(
-            `Missing or invalid assets.photos[${role}].orientation (expected 'portrait' | 'landscape')`
-          )
-        }
-      }
-      if (byRole[role as PhotoRole]) {
-        throw new Error(`Duplicate role in assets.photos: ${role}`)
-      }
-      byRole[role as PhotoRole] = {
-        dataUrl,
-        orientation: orientation as 'portrait' | 'landscape' | null,
-      }
-    }
-
-    // Minimum asset set: logo + at least 2 of { outside, inside, hero }.
-    // Mirrors the app-side Continue gate in validation.ts case 5. Enforced
-    // here so the engine stays safe against direct POSTs that bypass the UI.
-    if (!byRole.logo) throw new Error('Missing required asset: logo')
-    const nonLogoRoles = (['outside', 'inside', 'hero'] as const).filter((r) => byRole[r])
-    if (nonLogoRoles.length < 2) {
-      throw new Error('Need at least 2 of { outside, inside, hero }')
-    }
-    console.log(
-      `[${requestId}] photo roles: ${(['logo', 'outside', 'inside', 'hero'] as const)
-        .filter((r) => byRole[r])
-        .map((r) => {
-          const o = byRole[r]?.orientation
-          return o ? `${r}(${o})` : r
-        })
-        .join(', ')}`
-    )
-
-    // Brand palette: three 6-digit hex slots (primary / secondary / accent).
-    // Each is either extracted from the uploaded logo or picked per-swatch
-    // on Screen 5. We validate the container is an object, then each slot
-    // independently so the 400 error message pinpoints which slot is wrong
-    // — helps debugging if the client sends a partial or malformed payload.
-    // 400 (not 500) for the same reasons as before: client-shape problem,
-    // not a pipeline failure, and the cloner prompt trusts these values
-    // verbatim so we must guarantee shape here.
-    const palette: unknown = req.body.assets?.palette
-    if (palette === null || typeof palette !== 'object') {
+    const validated = validateRequest(req, requestId)
+    // validateRequest sends 400 and returns null for client-shape errors.
+    // Pipeline errors below throw and land in the 500 catch at the bottom.
+    if (!validated) {
       const buildTime = ((Date.now() - startTime) / 1000).toFixed(1)
-      const message = 'Missing or invalid assets.palette'
-      console.log(`[${requestId}] \u2717 ${message} after ${buildTime}s (value: ${JSON.stringify(palette)})`)
-      res.status(400).json({ requestId, error: message, phase: 5 })
+      console.log(`[${requestId}] \u2717 validation failed after ${buildTime}s`)
       return
     }
-    const HEX_RE = /^#[0-9a-fA-F]{6}$/
-    const paletteSlots = ['primary', 'secondary', 'accent'] as const
-    for (const slot of paletteSlots) {
-      const value = (palette as Record<string, unknown>)[slot]
-      if (typeof value !== 'string' || !HEX_RE.test(value)) {
-        const buildTime = ((Date.now() - startTime) / 1000).toFixed(1)
-        const message = `Missing or invalid assets.palette.${slot}`
-        console.log(`[${requestId}] \u2717 ${message} after ${buildTime}s (value: ${JSON.stringify(value)})`)
-        res.status(400).json({ requestId, error: message, phase: 5 })
-        return
-      }
-    }
-    const validPalette: BrandPalette = palette as BrandPalette
-    console.log(`[${requestId}] palette: primary=${validPalette.primary} secondary=${validPalette.secondary} accent=${validPalette.accent}`)
+    const {
+      vertical,
+      business,
+      photosByRole,
+      palette,
+      referenceUrl,
+      referenceImageUrl,
+      referenceLabel,
+    } = validated
 
-    // Map roles to the legacy photo1 / photo2 slots the cloner still expects.
-    //
-    // Precedence for photo1 (the cloner's "HERO PHOTO" slot): hero > outside
-    // > inside. Rationale: when the user uploads a hero shot that's what
-    // they want as the lead image; otherwise the storefront/exterior
-    // (outside) is the natural lead; inside is the last fallback. photo2
-    // takes the next available role that isn't the one picked for photo1.
-    //
-    // This mapping is a Phase Tampa Item 0 stub — it preserves pre-Tampa
-    // downstream behavior (same cloner signature, same deploy paths) while
-    // the Art Director plumbing lands. Item 5 deletes this block and has
-    // the cloner consume the AD's decision record directly.
-    const heroRole: Exclude<PhotoRole, 'logo'> =
-      byRole.hero ? 'hero' : byRole.outside ? 'outside' : 'inside'
-    const secondaryRole: Exclude<PhotoRole, 'logo'> | null =
-      (['outside', 'inside', 'hero'] as const).find(
-        (r) => r !== heroRole && byRole[r]
-      ) ?? null
-    if (!secondaryRole) {
-      // Defensive — the nonLogoRoles >= 2 check above guarantees this branch
-      // is unreachable, but throwing here beats letting undefined slip into
-      // Promise.all's argument list.
-      throw new Error('Unable to select a secondary photo (this is a bug)')
-    }
-    const heroInput = byRole[heroRole]!
-    const secondaryInput = byRole[secondaryRole]!
-    // TypeScript narrowing: non-logo orientations were validated to
-    // 'portrait' | 'landscape' above, so the null branch is dead here.
-    const heroOrientation = heroInput.orientation as 'portrait' | 'landscape'
-    const secondaryOrientation = secondaryInput.orientation as 'portrait' | 'landscape'
+    // Stage 1 — parallel: screenshot + processLogo + processPhoto(each non-logo).
+    const stage1Start = Date.now()
+    const nonLogoEntries = (['outside', 'inside', 'hero'] as const).flatMap((role) => {
+      const photo = photosByRole[role]
+      return photo ? [{ role, photo }] : []
+    })
     console.log(
-      `[${requestId}] role → legacy slot mapping: photo1=${heroRole}, photo2=${secondaryRole}`
+      `[${requestId}] \u2192 stage 1: parallel (screenshot + processLogo + ${nonLogoEntries.length} processPhoto)`,
     )
-
-    const business: BusinessInfo = {
-      name: req.body.business.name,
-      address: req.body.business.address ?? '',
-      phone: req.body.business.phone ?? '',
-      hours: req.body.business.hours ?? '',
-      slogan: req.body.business.slogan,
-      anythingSpecial: req.body.anythingSpecial,
-      sections: req.body.sections ?? {},
-      vertical: req.body.vertical,
-    }
-    // currentYear is the single source of truth for the year used in the
-    // page — flowed into the cloner prompt (EST badge, copyright footer,
-    // "since" copy) AND stringified for fal.ai's decorative badge prompt.
-    const currentYear = new Date().getFullYear()
-
-    // Reference screenshot source: if the library entry supplied an imageUrl,
-    // fetch that directly (image → fetch; video → ffmpeg first frame) and skip
-    // Puppeteer entirely. Otherwise fall back to the existing Puppeteer render
-    // of the live site. The live `reference.url` still travels unchanged to
-    // cloneToHtml below — it's the prompt's "Reference URL: ..." context and
-    // the user-facing click-through on Screen 4.
-    const refImageUrl: string | null =
-      typeof req.body.reference.imageUrl === 'string' && req.body.reference.imageUrl.length > 0
-        ? req.body.reference.imageUrl
-        : null
-    const screenshotMode = refImageUrl
-      ? isVideoUrl(refImageUrl)
-        ? 'direct video first-frame'
-        : 'direct image fetch'
-      : 'puppeteer'
-    console.log(`[${requestId}] reference mode: ${screenshotMode}`)
-    if (refImageUrl) console.log(`[${requestId}]   imageUrl: ${refImageUrl}`)
-
-    // Parallel: screenshot + prospect asset processing + fal.ai decoratives.
-    // All five are independent — no shared state, no ordering constraint.
-    // Processed assets now return ProcessedAsset records ({ role, buffer,
-    // orientation }); we destructure the buffer out for the existing paths
-    // and keep the full record in scope for downstream (Item 3) readers.
-    console.log(`[${requestId}] \u2192 parallel: screenshot + asset processing + fal.ai`)
-    const [screenshot, logoAsset, heroAsset, secondaryAsset, decorative] = await Promise.all([
-      refImageUrl ? pngBufferFromMediaUrl(refImageUrl) : screenshotUrl(req.body.reference.url),
-      processLogo(byRole.logo.dataUrl),
-      processPhoto(heroInput.dataUrl, heroRole, heroOrientation, validPalette),
-      processPhoto(secondaryInput.dataUrl, secondaryRole, secondaryOrientation, validPalette),
-      generateDecorativeAssets(currentYear.toString()),
+    const [screenshot, logoAsset, ...nonLogoAssets] = await Promise.all([
+      referenceImageUrl
+        ? pngBufferFromMediaUrl(referenceImageUrl)
+        : screenshotUrl(referenceUrl),
+      processLogo(photosByRole.logo!.dataUrl),
+      ...nonLogoEntries.map(({ role, photo }) =>
+        processPhoto(photo.dataUrl, role, photo.orientation as 'portrait' | 'landscape', palette),
+      ),
     ])
-    // Keep the full set of processed assets in scope under a stable name
-    // so Item 3 (Art Director input builder) can drop in without touching
-    // the parallel-processing block above.
-    const processedAssets: ProcessedAsset[] = [logoAsset, heroAsset, secondaryAsset]
-    console.log(`[${requestId}] \u2713 all parallel work done`)
+    const processedAssets: ProcessedAsset[] = [logoAsset, ...nonLogoAssets]
+    const processedByRole = new Map<PhotoRole, ProcessedAsset>(
+      processedAssets.map((a) => [a.role, a]),
+    )
+    console.log(`[${requestId}] \u2713 stage 1 done in ${Date.now() - stage1Start}ms`)
     console.log(`[${requestId}]   screenshot: ${screenshot.length} bytes`)
     for (const a of processedAssets) {
-      const orient = a.orientation ? ` ${a.orientation}` : ''
-      // Variant byte counts logged per-slot. Raw / duotone / cutout are all
-      // generated up-front (Item 1); logos point all three at the same
-      // buffer as a passthrough, so identical sizes there are expected.
       const v = a.variants
+      const orient = a.orientation ? ` ${a.orientation}` : ''
       console.log(
-        `[${requestId}]   ${a.role}${orient}: raw=${v.raw.length}b duotone=${v.duotone.length}b cutout=${v.cutout.length}b`
+        `[${requestId}]   ${a.role}${orient}: raw=${v.raw.length}b duotone=${v.duotone.length}b cutout=${v.cutout.length}b`,
       )
     }
-    console.log(`[${requestId}]   grain: ${decorative.grain.length} bytes`)
-    console.log(`[${requestId}]   badge: ${decorative.badge.length} bytes`)
-    console.log(`[${requestId}]   sketch: ${decorative.sketch.length} bytes`)
 
-    // Sequential: clone (with one retry). Must run after screenshot completes,
-    // and we don't want to pay for two concurrent Claude calls if the first
-    // would have succeeded.
-    console.log(`[${requestId}] \u2192 cloning...`)
+    // Stage 2 — Art Director.
+    const stage2Start = Date.now()
+    console.log(`[${requestId}] \u2192 stage 2: runArtDirector`)
+    const decision = await runArtDirector({
+      reference: {
+        id: slugify(referenceLabel || referenceUrl),
+        url: referenceUrl,
+        screenshotPng: screenshot,
+      },
+      business,
+      photos: processedAssets,
+      palette,
+    })
+    console.log(
+      `[${requestId}] \u2713 stage 2 done in ${Date.now() - stage2Start}ms — ` +
+        `hero=${decision.hero.photoId}/${decision.hero.variant}/${decision.hero.slot}, ` +
+        `placements=${decision.photoPlacements.length}, ` +
+        `ornaments=${decision.focalOrnaments.length}, ` +
+        `atmosphere=${decision.atmosphericDirectives.grain}/${decision.atmosphericDirectives.divider}/${decision.atmosphericDirectives.captionStyle}/${decision.atmosphericDirectives.backdrop}`,
+    )
+
+    // Stage 3 — focal ornament generation (per-entry Promise.allSettled).
+    const stage3Start = Date.now()
+    console.log(`[${requestId}] \u2192 stage 3: generateFocalOrnaments (${decision.focalOrnaments.length})`)
+    const ornamentResults = await generateFocalOrnaments(decision.focalOrnaments)
+    const ornamentGenSuccess = ornamentResults.filter((r) => r.imageUrl !== null).length
+    console.log(
+      `[${requestId}] \u2713 stage 3 done in ${Date.now() - stage3Start}ms — ${ornamentGenSuccess}/${ornamentResults.length} generated`,
+    )
+
+    // Stage 4 — download ornament URLs to buffers in parallel.
+    const stage4Start = Date.now()
+    console.log(`[${requestId}] \u2192 stage 4: download ${ornamentGenSuccess} ornament buffers`)
+    const ornamentBuffers = await downloadOrnamentBuffers(ornamentResults, requestId)
+    const ornamentDownloadSuccess = ornamentBuffers.filter((b) => b.buffer !== null).length
+    console.log(
+      `[${requestId}] \u2713 stage 4 done in ${Date.now() - stage4Start}ms — ${ornamentDownloadSuccess}/${ornamentResults.length} downloaded`,
+    )
+
+    // Assemble the RenderableArtDirection — logical coords → deploy paths.
+    const renderableDecision = buildRenderableDecision(decision, ornamentBuffers)
+
+    // Stage 5 — cloner. Sequential; one retry on failure (Sonnet's flaky).
+    const currentYear = new Date().getFullYear()
     const cloneOptions = {
       currentYear,
-      photo1Orientation: heroOrientation,
-      photo2Orientation: secondaryOrientation,
-      palette: validPalette,
-      // Full set of processed assets + their variants (Phase Tampa Item 1).
-      // Pre-Tampa cloner ignores this field; Item 5 starts consuming
-      // variants by role once the Art Director decides which variant to
-      // use per slot.
-      photos: processedAssets,
+      palette,
+      artDirection: renderableDecision,
     }
+    const stage5Start = Date.now()
+    console.log(`[${requestId}] \u2192 stage 5: cloneToHtml`)
     let html: string
     try {
-      html = await cloneToHtml(screenshot, business, req.body.reference.url, cloneOptions)
+      html = await cloneToHtml(screenshot, business, referenceUrl, cloneOptions)
     } catch (err) {
       console.log(`[${requestId}] \u26a0 clone failed, retrying once: ${err}`)
-      html = await cloneToHtml(screenshot, business, req.body.reference.url, cloneOptions)
+      html = await cloneToHtml(screenshot, business, referenceUrl, cloneOptions)
     }
-    console.log(`[${requestId}] \u2713 html ${html.length} chars`)
+    console.log(`[${requestId}] \u2713 stage 5 done in ${Date.now() - stage5Start}ms — html ${html.length} chars`)
 
-    // Sequential: deploy 7 files (index + logo + hero + photo2 + 3 decoratives).
-    // Paths here MUST match the paths referenced by the cloner's system prompt.
+    // Stage 6 — Netlify deploy. Paths MUST match what cloneToHtml emitted.
+    const stage6Start = Date.now()
+    const assets = buildDeployAssets(logoAsset, processedByRole, decision, ornamentBuffers)
     const slug = slugify(business.name)
-    // Deploy paths still reference the raw variant only — the cloner's
-    // system prompt hardcodes /logo.png, /hero.jpg, /photo2.jpg (pre-Tampa
-    // behavior preserved). Item 5 is where the cloner starts consuming
-    // non-raw variants by URL and we add additional deploy entries.
-    const assets: AssetFile[] = [
-      { path: '/logo.png', buffer: logoAsset.variants.raw, contentType: 'image/png' },
-      { path: '/hero.jpg', buffer: heroAsset.variants.raw, contentType: 'image/jpeg' },
-      { path: '/photo2.jpg', buffer: secondaryAsset.variants.raw, contentType: 'image/jpeg' },
-      { path: '/grain.png', buffer: decorative.grain, contentType: 'image/png' },
-      { path: '/badge.png', buffer: decorative.badge, contentType: 'image/png' },
-      { path: '/sketch.png', buffer: decorative.sketch, contentType: 'image/png' },
-    ]
-    console.log(`[${requestId}] \u2192 deploying as vno-${slug}-* (7 files)`)
+    console.log(`[${requestId}] \u2192 stage 6: deploy ${assets.length} files as vno-${slug}-*`)
     const url = await deploySite(html, assets, slug)
-    console.log(`[${requestId}] \u2713 deployed to ${url}`)
+    console.log(`[${requestId}] \u2713 stage 6 done in ${Date.now() - stage6Start}ms \u2192 ${url}`)
+
+    // Silence unused-var for `vertical` — validateRequest returns it for
+    // future consumers (Item 3+ might key vertical-specific behavior here).
+    void vertical
 
     const buildTime = Number(((Date.now() - startTime) / 1000).toFixed(1))
     const response = { requestId, url, buildTime, phase: 5 }
@@ -310,4 +197,308 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     console.log(`[${requestId}] \u2717 failed after ${buildTime}s: ${message}`)
     res.status(500).json({ requestId, error: message, phase: 5 })
   }
+}
+
+// -----------------------------------------------------------------------------
+// Path conventions — single source of truth shared by RenderableArtDirection
+// assembly and Netlify deploy-asset listing. If these drift, the cloner
+// emits paths that don't match deployed files and the rendered site breaks.
+// -----------------------------------------------------------------------------
+
+/**
+ * Deploy path for a non-logo photo variant. `role × variant` uniquely
+ * identifies a buffer and the deployed URL.
+ */
+function photoVariantPath(
+  role: Exclude<PhotoRole, 'logo'>,
+  variant: PhotoVariantName,
+): string {
+  return `/photo-${role}-${variant}.${variantExt(variant)}`
+}
+
+function variantExt(variant: PhotoVariantName): 'png' | 'jpg' {
+  // Cutouts are PNG (birefnet outputs PNG with alpha). Raw + duotone are
+  // JPEG (sharp's mozjpeg output from processPhoto).
+  return variant === 'cutout' ? 'png' : 'jpg'
+}
+
+function variantMediaType(variant: PhotoVariantName): 'image/png' | 'image/jpeg' {
+  return variant === 'cutout' ? 'image/png' : 'image/jpeg'
+}
+
+/**
+ * Deploy path for a focal ornament by its index into
+ * `decision.focalOrnaments`. Indexing (rather than hashing the prompt or
+ * the anchor) keeps paths stable for re-runs of the same decision and
+ * gives the cloner a predictable pattern to reference.
+ */
+function ornamentDeployPath(index: number): string {
+  return `/ornament-${index}.png`
+}
+
+// -----------------------------------------------------------------------------
+// Validation (extracted from the pre-Tampa inline block to keep buildRoute
+// readable). Returns null after writing a 400 on client-shape errors; throws
+// never (pipeline throws bubble up from buildRoute's main try/catch).
+// -----------------------------------------------------------------------------
+
+interface ValidatedRequest {
+  vertical: string
+  business: BusinessInfo
+  photosByRole: Partial<Record<PhotoRole, { dataUrl: string; orientation: 'portrait' | 'landscape' | null }>>
+  palette: BrandPalette
+  referenceUrl: string
+  referenceImageUrl: string | null
+  referenceLabel: string
+}
+
+function validateRequest(req: Request, requestId: string): ValidatedRequest | null {
+  if (!req.body.vertical) throw new Error('Missing vertical')
+  if (!req.body.business?.name) throw new Error('Missing business.name')
+  if (!req.body.reference?.url) throw new Error('Missing reference.url')
+
+  // Phase Tampa Item 0 wire shape: assets.photos is an array of labeled
+  // entries; assets.palette is unchanged.
+  const photosIn: unknown = req.body.assets?.photos
+  if (!Array.isArray(photosIn)) {
+    throw new Error('Missing or invalid assets.photos (expected array)')
+  }
+  const VALID_ROLES: readonly PhotoRole[] = ['logo', 'outside', 'inside', 'hero'] as const
+  const photosByRole: ValidatedRequest['photosByRole'] = {}
+  for (const raw of photosIn) {
+    if (!raw || typeof raw !== 'object') {
+      throw new Error('Invalid entry in assets.photos (expected object)')
+    }
+    const entry = raw as Record<string, unknown>
+    const role = entry.role
+    const dataUrl = entry.dataUrl
+    const orientation = entry.orientation
+    if (typeof role !== 'string' || !VALID_ROLES.includes(role as PhotoRole)) {
+      throw new Error(`Invalid assets.photos[].role: ${JSON.stringify(role)}`)
+    }
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+      throw new Error(`Invalid assets.photos[${role}].dataUrl`)
+    }
+    if (role === 'logo') {
+      if (orientation !== null) {
+        throw new Error('assets.photos[logo].orientation must be null')
+      }
+    } else {
+      if (orientation !== 'portrait' && orientation !== 'landscape') {
+        throw new Error(
+          `Missing or invalid assets.photos[${role}].orientation (expected 'portrait' | 'landscape')`,
+        )
+      }
+    }
+    if (photosByRole[role as PhotoRole]) {
+      throw new Error(`Duplicate role in assets.photos: ${role}`)
+    }
+    photosByRole[role as PhotoRole] = {
+      dataUrl,
+      orientation: orientation as 'portrait' | 'landscape' | null,
+    }
+  }
+
+  if (!photosByRole.logo) throw new Error('Missing required asset: logo')
+  const nonLogoCount = (['outside', 'inside', 'hero'] as const).filter((r) => photosByRole[r]).length
+  if (nonLogoCount < 2) {
+    throw new Error('Need at least 2 of { outside, inside, hero }')
+  }
+  console.log(
+    `[${requestId}] photo roles: ${(['logo', 'outside', 'inside', 'hero'] as const)
+      .filter((r) => photosByRole[r])
+      .map((r) => {
+        const o = photosByRole[r]?.orientation
+        return o ? `${r}(${o})` : r
+      })
+      .join(', ')}`,
+  )
+
+  // Palette — three 6-digit hex slots. Validation errors here 400 (not 500)
+  // because they're client-shape problems; response handled by caller.
+  const palette: unknown = req.body.assets?.palette
+  if (palette === null || typeof palette !== 'object') {
+    const message = 'Missing or invalid assets.palette'
+    console.log(`[${requestId}] \u2717 ${message} (value: ${JSON.stringify(palette)})`)
+    throw new Error(message) // pipeline 500 is fine — client shouldn't reach here without palette
+  }
+  const HEX_RE = /^#[0-9a-fA-F]{6}$/
+  for (const slot of ['primary', 'secondary', 'accent'] as const) {
+    const value = (palette as Record<string, unknown>)[slot]
+    if (typeof value !== 'string' || !HEX_RE.test(value)) {
+      throw new Error(`Missing or invalid assets.palette.${slot}`)
+    }
+  }
+  const validPalette: BrandPalette = palette as BrandPalette
+  console.log(
+    `[${requestId}] palette: primary=${validPalette.primary} secondary=${validPalette.secondary} accent=${validPalette.accent}`,
+  )
+
+  // Reference imageUrl — optional direct media URL (short-circuits Puppeteer).
+  const referenceImageUrl: string | null =
+    typeof req.body.reference.imageUrl === 'string' && req.body.reference.imageUrl.length > 0
+      ? req.body.reference.imageUrl
+      : null
+  const screenshotMode = referenceImageUrl
+    ? isVideoUrl(referenceImageUrl)
+      ? 'direct video first-frame'
+      : 'direct image fetch'
+    : 'puppeteer'
+  console.log(`[${requestId}] reference mode: ${screenshotMode}`)
+  if (referenceImageUrl) console.log(`[${requestId}]   imageUrl: ${referenceImageUrl}`)
+
+  const business: BusinessInfo = {
+    name: req.body.business.name,
+    address: req.body.business.address ?? '',
+    phone: req.body.business.phone ?? '',
+    hours: req.body.business.hours ?? '',
+    slogan: req.body.business.slogan,
+    anythingSpecial: req.body.anythingSpecial,
+    sections: req.body.sections ?? {},
+    vertical: req.body.vertical,
+  }
+
+  return {
+    vertical: req.body.vertical,
+    business,
+    photosByRole,
+    palette: validPalette,
+    referenceUrl: req.body.reference.url,
+    referenceImageUrl,
+    referenceLabel: typeof req.body.reference.label === 'string' ? req.body.reference.label : '',
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Ornament download — convert each fal hosted URL to a Buffer. Download
+// failures are non-fatal: they degrade the ornament to generationFailed so
+// the cloner skips it, rather than tanking the whole build.
+// -----------------------------------------------------------------------------
+
+interface OrnamentBufferResult {
+  buffer: Buffer | null
+  error?: string
+}
+
+async function downloadOrnamentBuffers(
+  results: FocalOrnamentWithUrl[],
+  requestId: string,
+): Promise<OrnamentBufferResult[]> {
+  return Promise.all(
+    results.map(async (r, i): Promise<OrnamentBufferResult> => {
+      if (r.imageUrl === null) {
+        // Already failed at generation — propagate the original error.
+        return { buffer: null, error: r.error }
+      }
+      try {
+        const response = await fetch(r.imageUrl)
+        if (!response.ok) {
+          const err = `download failed: HTTP ${response.status}`
+          console.log(`[${requestId}]   ornament ${i} ${err}`)
+          return { buffer: null, error: err }
+        }
+        const ab = await response.arrayBuffer()
+        return { buffer: Buffer.from(ab) }
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e)
+        console.log(`[${requestId}]   ornament ${i} download threw: ${err}`)
+        return { buffer: null, error: err }
+      }
+    }),
+  )
+}
+
+// -----------------------------------------------------------------------------
+// Resolve the AD's decision to a RenderableArtDirection the cloner
+// consumes directly. Every logical (role, variant) and (ornament, index)
+// coord becomes a concrete deploy path here.
+// -----------------------------------------------------------------------------
+
+function buildRenderableDecision(
+  decision: ArtDirectorDecision,
+  ornamentBuffers: OrnamentBufferResult[],
+): RenderableArtDirection {
+  return {
+    ...decision,
+    logoPath: '/logo.png',
+    hero: {
+      ...decision.hero,
+      src: photoVariantPath(decision.hero.photoId, decision.hero.variant),
+    },
+    photoPlacements: decision.photoPlacements.map((p): RenderablePhotoPlacement => ({
+      ...p,
+      src: photoVariantPath(p.photoId, p.variant),
+    })),
+    focalOrnaments: decision.focalOrnaments.map((o, i): RenderableFocalOrnament => {
+      const ob = ornamentBuffers[i]
+      if (!ob || ob.buffer === null) {
+        return {
+          ...o,
+          deployPath: null,
+          generationFailed: true,
+          error: ob?.error ?? 'unknown ornament failure',
+        }
+      }
+      return { ...o, deployPath: ornamentDeployPath(i) }
+    }),
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Netlify asset list — logo + every (role, variant) the decision uses +
+// every successful ornament. Must be symmetric with buildRenderableDecision
+// so paths emitted by the cloner all resolve on the deployed site.
+// -----------------------------------------------------------------------------
+
+function buildDeployAssets(
+  logoAsset: ProcessedAsset,
+  processedByRole: Map<PhotoRole, ProcessedAsset>,
+  decision: ArtDirectorDecision,
+  ornamentBuffers: OrnamentBufferResult[],
+): AssetFile[] {
+  const files: AssetFile[] = []
+
+  // Logo: always /logo.png, raw only. processLogo aliases all three
+  // variants to the same raw buffer, so variants.raw is correct.
+  files.push({ path: '/logo.png', buffer: logoAsset.variants.raw, contentType: 'image/png' })
+
+  // Used photo variants — dedupe across hero + placements in case the AD
+  // ever references the same (role, variant) pair twice (shouldn't happen
+  // post-uniqueness-check, but belt-and-suspenders).
+  const seen = new Set<string>()
+  const slots: Array<{ photoId: Exclude<PhotoRole, 'logo'>; variant: PhotoVariantName }> = [
+    { photoId: decision.hero.photoId, variant: decision.hero.variant },
+    ...decision.photoPlacements.map((p) => ({ photoId: p.photoId, variant: p.variant })),
+  ]
+  for (const slot of slots) {
+    const key = `${slot.photoId}:${slot.variant}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const asset = processedByRole.get(slot.photoId)
+    if (!asset) {
+      // AD referenced a role not in the input set. Shouldn't happen: the
+      // AD input is derived from the input photos, and the coverage check
+      // in runArtDirector rejects mismatches. Throw loud if it does.
+      throw new Error(`AD referenced missing role: ${slot.photoId}`)
+    }
+    files.push({
+      path: photoVariantPath(slot.photoId, slot.variant),
+      buffer: asset.variants[slot.variant],
+      contentType: variantMediaType(slot.variant),
+    })
+  }
+
+  // Successful ornaments only. Failed ones have deployPath: null in the
+  // decision, and the cloner is told to skip them.
+  ornamentBuffers.forEach((ob, i) => {
+    if (ob.buffer !== null) {
+      files.push({
+        path: ornamentDeployPath(i),
+        buffer: ob.buffer,
+        contentType: 'image/png',
+      })
+    }
+  })
+
+  return files
 }

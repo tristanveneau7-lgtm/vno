@@ -228,29 +228,130 @@ const MODEL = 'claude-opus-4-7' as const
 const EMIT_TOOL_NAME = 'emit_art_direction' as const
 
 /**
- * Temperature 0.7 per the plan — some creative variance is desirable,
- * 0 makes the AD's decisions mechanical. Max tokens 4096: the typical
- * decision record is ~1-2KB serialized, 4096 is ample headroom including
- * retries with error context.
+ * Max tokens 4096: the typical decision record is ~1-2KB serialized,
+ * 4096 is ample headroom including retries with error context.
+ *
+ * Note: `temperature` is NOT set on the call — Opus 4.7 rejects the
+ * parameter with `400 'temperature' is deprecated for this model`. The
+ * model uses its internal default, which lands creative enough for
+ * this task (Item 6 smoke will calibrate further if the AD's decisions
+ * turn mechanical).
  */
-const TEMPERATURE = 0.7
 const MAX_TOKENS = 4096
 
 /**
- * JSON Schema used as the `input_schema` on the forced tool definition.
- * Computed once at module load from the zod schema via `zod-to-json-
- * schema` — no hand-written duplicate. When the agent calls the tool,
- * the API validates its input against this schema server-side (with
- * `strict: true` on the tool, the API rejects mismatched calls before
- * they reach us), so structural violations should rarely survive to the
- * zod stage. Zod still runs on the response to catch `.refine` /
- * `.superRefine` invariants (sectionCopy non-empty, photoId uniqueness),
- * which are not expressible as JSON Schema keywords.
+ * JSON Schema keywords that Anthropic's tool-use validator rejects with
+ * a 400 (`For '<type>' type, property '<keyword>' is not supported`).
+ * The API accepts a structural subset of JSON Schema — type / properties
+ * / required / items / enum / const / anyOf / oneOf / allOf / not /
+ * additionalProperties / description / default — but rejects the
+ * validation keywords below. We strip them from the schema we send and
+ * keep zod as the full truth source for runtime validation.
+ *
+ * Discovered empirically during Phase Tampa Item 5's first end-to-end
+ * build (Anthropic 400 on `maxItems` emitted by `z.array(...).max(3)`).
+ * The list is conservative — add to it if a future Anthropic error
+ * flags another keyword, rather than trying to chase the full spec
+ * delta by reading docs.
  */
-const ART_DIRECTOR_JSON_SCHEMA = zodToJsonSchema(artDirectorSchema, {
-  target: 'openApi3',
-  $refStrategy: 'none',
-}) as Anthropic.Messages.Tool.InputSchema
+const UNSUPPORTED_SCHEMA_KEYWORDS = new Set<string>([
+  // Array validation
+  'maxItems',
+  'minItems',
+  'uniqueItems',
+  // String validation
+  'minLength',
+  'maxLength',
+  'pattern',
+  'format',
+  // Number validation
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+  // Object validation
+  'minProperties',
+  'maxProperties',
+  'patternProperties',
+])
+
+/**
+ * Recursively adapt a JSON Schema document to Anthropic's tool-use
+ * validator. Two transformations, both discovered empirically during
+ * Phase Tampa Item 5's end-to-end bring-up:
+ *
+ *   1. Strip {@link UNSUPPORTED_SCHEMA_KEYWORDS} at every depth.
+ *      Anthropic's 400s: `For '<type>' type, property '<keyword>'
+ *      is not supported`. Zod keeps these refinements runtime-side
+ *      in `callAndValidate`.
+ *
+ *   2. Normalize `additionalProperties` on every object-shaped node to
+ *      the literal `false`. Anthropic's 400: `For 'object' type,
+ *      'additionalProperties: object' is not supported`. This is
+ *      triggered by `z.record(...)` which emits an object-valued
+ *      `additionalProperties` (a schema for the record values). We
+ *      discard the value-schema in the API-facing copy (zod's
+ *      `.min(0).max(1)` on record values still runs on the response),
+ *      and set `additionalProperties: false` unconditionally — matches
+ *      the `.strict()` posture our zod schemas already use. Nodes
+ *      without `type: 'object'` and without a `properties` key are
+ *      left untouched.
+ *
+ * Returns a fresh object — the input is not mutated, so
+ * `zodToJsonSchema`'s output stays intact for any other consumer.
+ * Exported for the regression tests in
+ * `src/__tests__/artDirector.test.ts`.
+ */
+export function sanitizeJsonSchemaForAnthropic(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map((item) => sanitizeJsonSchemaForAnthropic(item))
+  }
+  if (schema !== null && typeof schema === 'object') {
+    const src = schema as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(src)) {
+      if (UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) continue
+      if (key === 'additionalProperties') continue // handled below
+      out[key] = sanitizeJsonSchemaForAnthropic(value)
+    }
+    // Object-shaped nodes — z.object(), z.record(), or any node that
+    // carries `properties` — get `additionalProperties: false` forced
+    // on. Non-object nodes (string, array, enum-only, etc.) are left
+    // without the key. NOTE: enum values in this schema are all string
+    // literals, so the walker never recurses into object-shaped enum
+    // entries and this normalization is safe. If the schema ever grows
+    // object-typed enum values, this behavior would need a special case.
+    const isObjectShaped = src.type === 'object' || 'properties' in src
+    if (isObjectShaped) {
+      out.additionalProperties = false
+    }
+    return out
+  }
+  return schema
+}
+
+/**
+ * JSON Schema used as the `input_schema` on the forced tool definition.
+ * Computed once at module load from the zod schema via
+ * `zod-to-json-schema`, then passed through
+ * {@link sanitizeJsonSchemaForAnthropic} to strip validation keywords
+ * Anthropic's tool-use validator rejects. The stripped schema carries
+ * only the structural shape — zod runs on every tool response (see
+ * {@link callAndValidate}) to enforce the refinements the API no longer
+ * sees: `.max(3)` on focalOrnaments, `.min(1)` on meta strings,
+ * `.datetime()` on createdAt, `.refine()` on sectionCopy,
+ * `.superRefine()` on photoId uniqueness.
+ *
+ * Exported so the regression test can assert no unsupported keyword
+ * survives sanitization.
+ */
+export const ART_DIRECTOR_JSON_SCHEMA = sanitizeJsonSchemaForAnthropic(
+  zodToJsonSchema(artDirectorSchema, {
+    target: 'openApi3',
+    $refStrategy: 'none',
+  }),
+) as Anthropic.Messages.Tool.InputSchema
 
 // -----------------------------------------------------------------------------
 // Main entry point
@@ -363,7 +464,6 @@ async function callClaude(content: Anthropic.Messages.ContentBlockParam[]): Prom
   const params: Anthropic.Messages.MessageCreateParams = {
     model: MODEL,
     max_tokens: MAX_TOKENS,
-    temperature: TEMPERATURE,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],
     tools: [
