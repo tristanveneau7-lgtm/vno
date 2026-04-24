@@ -257,6 +257,15 @@ const sectionCopySchema = z
     subhead: z.string().optional(),
   })
   .strict()
+  // An entry that carries neither caption nor subhead conveys no
+  // information — the cloner would ignore it and it just wastes tokens.
+  // Refuse to parse such entries so the agent either fills one or omits
+  // the entry entirely.
+  .refine(
+    (v) => (v.caption !== undefined && v.caption.length > 0)
+      || (v.subhead !== undefined && v.subhead.length > 0),
+    { message: 'sectionCopy entry must have at least one of caption or subhead' },
+  )
 
 /**
  * Provenance metadata attached to every decision record. `referenceId`
@@ -271,13 +280,13 @@ const sectionCopySchema = z
 const artDirectorMetaSchema = z
   .object({
     /** Reference library id (e.g. 'tidescape'). */
-    referenceId: z.string(),
+    referenceId: z.string().min(1),
     /** Stable hash of the business snapshot used to cache / key state. */
-    businessHash: z.string(),
+    businessHash: z.string().min(1),
     /** Schema + prompt version. Bump on material changes. */
     version: z.literal('art-director-v1'),
     /** ISO 8601 timestamp of decision creation. */
-    createdAt: z.string(),
+    createdAt: z.string().datetime(),
     /**
      * Per-decision confidence scores in [0, 1]. Optional — Part 1
      * does not consume these; Part 2's live loop uses them to pick
