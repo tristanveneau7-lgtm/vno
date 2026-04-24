@@ -17,6 +17,7 @@ import {
 } from '../lib/assets.js'
 import { generateFocalOrnaments, type FocalOrnamentWithUrl } from '../lib/fal.js'
 import { runArtDirector } from '../lib/artDirector.js'
+import { runCritic } from '../lib/critic.js'
 import type { ArtDirectorDecision, PhotoVariantName } from '../types/artDirector.js'
 import { deploySite, slugify, type AssetFile } from '../lib/netlify.js'
 import { isVideoUrl, pngBufferFromMediaUrl } from '../lib/media.js'
@@ -42,10 +43,17 @@ import { isVideoUrl, pngBufferFromMediaUrl } from '../lib/media.js'
  *      renders directly against this record.
  *   7. Stage 5 — cloneToHtml(screenshot, business, url, {currentYear,
  *      palette, artDirection}). Claude Sonnet vision call with one retry.
- *   8. Stage 6 — multi-file Netlify deploy: index.html + logo + used
- *      photo variants (role × variant, only those the decision
- *      references) + successful ornaments.
- *   9. Return { requestId, url, buildTime, phase: 5 }.
+ *   8. Stage 6 — terminal. Branches on `mode` (body field, default
+ *      'preview'):
+ *        preview: skip Netlify, return the HTML inline. Used during
+ *          the pitch flow so prospects see the generated site without
+ *          consuming deploy quota for builds that won't be used.
+ *        deploy: multi-file Netlify deploy (index.html + logo + used
+ *          photo variants (role × variant) + successful ornaments).
+ *          Used after a prospect says yes.
+ *   9. Return shape:
+ *        preview: { requestId, buildTime, phase: 5, mode: 'preview', html }
+ *        deploy:  { requestId, url, buildTime, phase: 5, mode: 'deploy' }
  *
  * Pre-Tampa /grain.png /badge.png /sketch.png decorative pipeline is
  * gone — the cloner's TEXTURE section produces atmosphere via inline
@@ -81,6 +89,7 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
       referenceUrl,
       referenceImageUrl,
       referenceLabel,
+      mode,
     } = validated
 
     // Stage 1 — parallel: screenshot + processLogo + processPhoto(each non-logo).
@@ -175,20 +184,73 @@ export async function buildRoute(req: Request, res: Response): Promise<void> {
     }
     console.log(`[${requestId}] \u2713 stage 5 done in ${Date.now() - stage5Start}ms — html ${html.length} chars`)
 
-    // Stage 6 — Netlify deploy. Paths MUST match what cloneToHtml emitted.
+    // Stage 5a — Critic. Read the rendered HTML + AD decision + reference
+    // against the reference screenshot; emit a structured critique.
+    //
+    // Phase Tampa Part 1.5 Item 4 Step 1: this stage runs and LOGS but
+    // does NOT gate. The build always proceeds to Stage 6 regardless of
+    // verdict. Step 2 wires the revise branch; until then we verify the
+    // Critic integrates cleanly into the real pipeline without affecting
+    // production behavior.
+    const stage5aStart = Date.now()
+    console.log(`[${requestId}] \u2192 stage 5a: runCritic round=1`)
+    const round1Critique = await runCritic({
+      artDirection: decision,
+      html,
+      reference: {
+        id: slugify(referenceLabel || referenceUrl),
+        url: referenceUrl,
+        screenshotPng: screenshot,
+      },
+      business,
+      palette,
+      round: 1,
+    })
+    console.log(
+      `[${requestId}] \u2713 stage 5a done in ${Date.now() - stage5aStart}ms — ` +
+        `verdict=${round1Critique.verdict} score=${round1Critique.score}/10 ` +
+        `critiques=${round1Critique.critiques.length} preserve=${round1Critique.preserve.length}`,
+    )
+    // Step 1 scope: critique is produced but not acted on. Step 2 branches.
+    void round1Critique
+
+    // Silence unused-var for `vertical` — validateRequest returns it for
+    // future consumers (Item 3+ might key vertical-specific behavior here).
+    void vertical
+
+    // Stage 6 — terminal. Branches on `mode`.
     const stage6Start = Date.now()
+    const buildTime = Number(((Date.now() - startTime) / 1000).toFixed(1))
+
+    if (mode === 'preview') {
+      // Preview-mode: return HTML inline, no Netlify call. The PWA
+      // (Preview.tsx) renders this via <iframe srcDoc={html}>. Paths
+      // referenced in the HTML (photo variants, ornaments, logo) won't
+      // resolve because those files never got uploaded — which is fine
+      // for the pitch surface since the iframe renders within the PWA's
+      // origin. Deploy-mode is where asset paths matter.
+      console.log(
+        `[${requestId}] \u2192 stage 6: preview-mode response (html ${html.length} chars, no netlify call)`,
+      )
+      const response = { requestId, buildTime, phase: 5, mode: 'preview' as const, html }
+      console.log(`[${requestId}] \u2713 stage 6 done in ${Date.now() - stage6Start}ms — preview`)
+      // Don't JSON.stringify the response here — that dumps the full
+      // HTML body to the server log. Brief summary instead.
+      console.log(
+        `[${requestId}] \u2192 returning { requestId, buildTime, phase: 5, mode: 'preview', html: ${html.length} chars }`,
+      )
+      res.json(response)
+      return
+    }
+
+    // Deploy-mode: original Stage 6 behavior.
     const assets = buildDeployAssets(logoAsset, processedByRole, decision, ornamentBuffers)
     const slug = slugify(business.name)
     console.log(`[${requestId}] \u2192 stage 6: deploy ${assets.length} files as vno-${slug}-*`)
     const url = await deploySite(html, assets, slug)
     console.log(`[${requestId}] \u2713 stage 6 done in ${Date.now() - stage6Start}ms \u2192 ${url}`)
 
-    // Silence unused-var for `vertical` — validateRequest returns it for
-    // future consumers (Item 3+ might key vertical-specific behavior here).
-    void vertical
-
-    const buildTime = Number(((Date.now() - startTime) / 1000).toFixed(1))
-    const response = { requestId, url, buildTime, phase: 5 }
+    const response = { requestId, url, buildTime, phase: 5, mode: 'deploy' as const }
     console.log(`[${requestId}] \u2192 returning ${JSON.stringify(response)}`)
     res.json(response)
   } catch (err) {
@@ -250,12 +312,34 @@ interface ValidatedRequest {
   referenceUrl: string
   referenceImageUrl: string | null
   referenceLabel: string
+  /**
+   * Terminal-stage mode. 'preview' (default) skips Stage 6 Netlify
+   * upload and returns the HTML inline; 'deploy' runs the full
+   * Netlify deploy path. Defaulting to preview is deliberate — it
+   * removes Netlify from the pitch critical path. Added in the
+   * Phase Tampa Part 1.5 preview-mode side quest.
+   */
+  mode: 'preview' | 'deploy'
 }
 
 function validateRequest(req: Request, requestId: string): ValidatedRequest | null {
   if (!req.body.vertical) throw new Error('Missing vertical')
   if (!req.body.business?.name) throw new Error('Missing business.name')
   if (!req.body.reference?.url) throw new Error('Missing reference.url')
+
+  // Mode — optional body field. Absent means 'preview' (the corrective
+  // default for the pitch flow). Anything other than 'preview' | 'deploy'
+  // is rejected as a client-shape error.
+  const rawMode: unknown = req.body.mode
+  let mode: 'preview' | 'deploy'
+  if (rawMode === undefined || rawMode === null) {
+    mode = 'preview'
+  } else if (rawMode === 'preview' || rawMode === 'deploy') {
+    mode = rawMode
+  } else {
+    throw new Error(`Invalid mode: ${JSON.stringify(rawMode)} (expected 'preview' | 'deploy' or absent)`)
+  }
+  console.log(`[${requestId}] mode: ${mode}${rawMode === undefined ? ' (default)' : ''}`)
 
   // Phase Tampa Item 0 wire shape: assets.photos is an array of labeled
   // entries; assets.palette is unchanged.
@@ -366,6 +450,7 @@ function validateRequest(req: Request, requestId: string): ValidatedRequest | nu
     referenceUrl: req.body.reference.url,
     referenceImageUrl,
     referenceLabel: typeof req.body.reference.label === 'string' ? req.body.reference.label : '',
+    mode,
   }
 }
 
@@ -499,6 +584,5 @@ function buildDeployAssets(
       })
     }
   })
-
   return files
 }
